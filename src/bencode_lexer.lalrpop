@@ -1,29 +1,12 @@
 use crate::bencode::{Token, Bencode, BencError};
-use lalrpop_util::ParseError;
 
 grammar<'input>(input: &'input str);
 
 pub Benc: Bencode<'input> = {
-    "i" <sign: ("-")?> <n: Num> "e" =>? {
-        if sign.is_some() && n == 0 {
-            return Err(ParseError::User{error: BencError::NegativeZero});
-        }
-
-        Ok(Bencode::Num(if sign.is_some() { -n } else { n }))
-    },
-
-    Str => Bencode::Str(<>),
-
-    "l" <Benc*> "e" => Bencode::List(<>),
-
-    "d" <dict: (Str Benc)*> "e" =>? {
-        if !dict[..].windows(2).all(|w| w[0].0 < w[1].0) {
-            return Err(ParseError::User{error: BencError::DictKeysNotSorted});
-        }
-        
-        let d = dict.into_iter().collect();
-        Ok(Bencode::Dict(d))
-    },
+    "i" <("-")?> <Num> "e" =>? Bencode::decode_num(<>),
+    Str                    =>  Bencode::decode_str(<>),
+    "l" <Benc*> "e"        =>  Bencode::List(<>),
+    "d" <(Str Benc)*> "e"  =>? Bencode::decode_dict(<>),
 }
 
 extern {
@@ -38,6 +21,6 @@ extern {
         ":" => Token::Colon,
         "-" => Token::Minus,
         Num => Token::Num(<i64>),
-        Str => Token::Str((i32, <&'input str>)),
+        Str => Token::Str((i32, <&'input [u8]>)),
     }
 }

@@ -1,24 +1,68 @@
 use lalrpop_util::{lalrpop_mod, ParseError};
 use logos::{Lexer, Logos};
 use std::collections::HashMap;
+use std::str::from_utf8;
 
 type Spanned<Tok, Loc, Error> = Result<(Loc, Tok, Loc), Error>;
+type DecodeResult<'a> = Result<Bencode<'a>, ParseError<usize, Token<'a>, BencError>>;
 
 #[derive(Debug, PartialEq)]
 pub enum Bencode<'a> {
     Num(i64),
     Str(&'a str),
+    BStr(&'a [u8]),
     List(Vec<Bencode<'a>>),
     Dict(HashMap<&'a str, Bencode<'a>>),
 }
 
 impl<'a> Bencode<'a> {
-    pub fn decode(input: &'a str) -> Result<Bencode, ParseError<usize, Token, BencError>> {
+    pub fn decode(input: &str) -> DecodeResult {
         let parser = bencode_lexer::BencParser::new();
 
         let lex = Token::lexer(input);
         parser.parse(input, lex)
     }
+
+    pub fn decode_num(sign: Option<Token>, n: i64) -> DecodeResult {
+        if sign.is_some() && n == 0 {
+            return Err(ParseError::User {
+                error: BencError::NegativeZero,
+            });
+        }
+
+        Ok(Bencode::Num(if sign.is_some() { -n } else { n }))
+    }
+
+    pub fn decode_str(input: &[u8]) -> Bencode {
+        from_utf8(input).map_or(Bencode::BStr(input), |s| Bencode::Str(s))
+    }
+
+    pub fn decode_dict(list: Vec<(&'a [u8], Bencode<'a>)>) -> DecodeResult<'a> {
+        // check keys are in sorted order
+        if !list[..].windows(2).all(|w| w[0].0 < w[1].0) {
+            return Err(ParseError::User {
+                error: BencError::DictKeysNotSorted,
+            });
+        }
+
+        // TODO - what if keys are not utf-8?
+        let mut dict = HashMap::new();
+
+        let dict_tuples = list.into_iter().map(|t| (from_utf8(t.0).ok(), t.1));
+        for (k, v) in dict_tuples {
+            match k {
+                Some(k) => dict.insert(k, v),
+                None => {
+                    return Err(ParseError::User {
+                        error: BencError::ParseError,
+                    })
+                }
+            };
+        }
+
+        Ok(Bencode::Dict(dict))
+    }
+
 }
 
 #[derive(Debug, PartialEq)]
@@ -49,8 +93,8 @@ pub enum Token<'a> {
     #[regex("[1-9][0-9]*", |lex| lex.slice().parse())]
     Num(i64),
 
-    #[regex("[0-9]+:", Token::parse_str)]
-    Str((u32, &'a str)), // TODO - remove length?
+    #[regex("[0-9]+:", Token::lex_str)]
+    Str((u32, &'a [u8])), // TODO - remove length?
 
     #[error]
     Error,
@@ -66,7 +110,7 @@ impl<'a> Token<'a> {
             })
     }
 
-    fn parse_str(lex: &mut Lexer<'a, Token<'a>>) -> Option<(u32, &'a str)> {
+    fn lex_str(lex: &mut Lexer<'a, Token<'a>>) -> Option<(u32, &'a [u8])> {
         let len_slice = lex.slice();
         let len = len_slice[..len_slice.len() - 1].parse::<u32>().ok()?;
         let remainder = lex.remainder();
@@ -75,7 +119,7 @@ impl<'a> Token<'a> {
             let str = &lex.remainder()[..len as usize];
             lex.bump(len as usize);
 
-            Some((len, str))
+            Some((len, str.as_bytes()))
         } else {
             None
         }
