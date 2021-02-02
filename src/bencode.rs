@@ -129,7 +129,7 @@ pub enum Token<'a> {
     Num(i64),
 
     #[regex("[0-9]+:", Token::lex_str)]
-    Str((u32, &'a str)), // TODO - remove length?
+    Str(&'a str),
 
     #[error]
     Error,
@@ -145,7 +145,7 @@ impl<'a> Token<'a> {
             })
     }
 
-    fn lex_str(lex: &mut Lexer<'a, Token<'a>>) -> Option<(u32, &'a str)> {
+    fn lex_str(lex: &mut Lexer<'a, Token<'a>>) -> Option<&'a str> {
         let len_slice = lex.slice();
         let len = len_slice[..len_slice.len() - 1].parse::<u32>().ok()?;
         let remainder = lex.remainder();
@@ -154,7 +154,7 @@ impl<'a> Token<'a> {
             let str = &lex.remainder()[..len as usize];
             lex.bump(len as usize);
 
-            Some((len, str))
+            Some(str)
         } else {
             None
         }

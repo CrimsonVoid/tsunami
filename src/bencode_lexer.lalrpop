@@ -1,8 +1,8 @@
 use crate::bencode::{Token, Bencode, BencError};
 
-grammar<'input>(input: &'input str);
+grammar<'i>(input: &'i str);
 
-pub Benc: Bencode<'input> = {
+pub Benc: Bencode<'i> = {
     "i" <("-")?> <Num> "e" =>? Bencode::decode_num(<>),
     Str                    =>  Bencode::Str(<>),
     "l" <Benc*> "e"        =>  Bencode::List(<>),
@@ -13,7 +13,7 @@ extern {
     type Location = usize;
     type Error = BencError;
 
-    enum Token<'input> {
+    enum Token<'i> {
         "i" => Token::I,
         "l" => Token::L,
         "d" => Token::D,
@@ -21,6 +21,6 @@ extern {
         ":" => Token::Colon,
         "-" => Token::Minus,
         Num => Token::Num(<i64>),
-        Str => Token::Str((i32, <&'input str>)),
+        Str => Token::Str(<&'i str>),
     }
 }
