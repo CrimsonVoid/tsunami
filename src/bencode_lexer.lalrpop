@@ -4,7 +4,7 @@ grammar<'input>(input: &'input str);
 
 pub Benc: Bencode<'input> = {
     "i" <("-")?> <Num> "e" =>? Bencode::decode_num(<>),
-    Str                    =>  Bencode::decode_str(<>),
+    Str                    =>  Bencode::Str(<>),
     "l" <Benc*> "e"        =>  Bencode::List(<>),
     "d" <(Str Benc)*> "e"  =>? Bencode::decode_dict(<>),
 }
@@ -21,6 +21,6 @@ extern {
         ":" => Token::Colon,
         "-" => Token::Minus,
         Num => Token::Num(<i64>),
-        Str => Token::Str((i32, <&'input [u8]>)),
+        Str => Token::Str((i32, <&'input str>)),
     }
 }

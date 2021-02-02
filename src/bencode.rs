@@ -1,7 +1,6 @@
 use lalrpop_util::{lalrpop_mod, ParseError};
 use logos::{Lexer, Logos};
 use std::collections::HashMap;
-use std::str::from_utf8;
 
 type Spanned<Tok, Loc, Error> = Result<(Loc, Tok, Loc), Error>;
 type DecodeResult<'a> = Result<Bencode<'a>, ParseError<usize, Token<'a>, BencError>>;
@@ -10,7 +9,6 @@ type DecodeResult<'a> = Result<Bencode<'a>, ParseError<usize, Token<'a>, BencErr
 pub enum Bencode<'a> {
     Num(i64),
     Str(&'a str),
-    BStr(&'a [u8]),
     List(Vec<Bencode<'a>>),
     Dict(HashMap<&'a str, Bencode<'a>>),
 }
@@ -34,11 +32,7 @@ impl<'a> Bencode<'a> {
         Ok(Bencode::Num(if sign.is_some() { -n } else { n }))
     }
 
-    pub fn decode_str(input: &[u8]) -> Bencode {
-        from_utf8(input).map_or(Bencode::BStr(input), |s| Bencode::Str(s))
-    }
-
-    pub fn decode_dict(list: Vec<(&'a [u8], Bencode<'a>)>) -> DecodeResult<'a> {
+    pub fn decode_dict(list: Vec<(&'a str, Bencode<'a>)>) -> DecodeResult<'a> {
         // check keys are in sorted order
         if !list[..].windows(2).all(|w| w[0].0 < w[1].0) {
             return Err(ParseError::User {
@@ -48,17 +42,8 @@ impl<'a> Bencode<'a> {
 
         // TODO - what if keys are not utf-8?
         let mut dict = HashMap::new();
-
-        let dict_tuples = list.into_iter().map(|t| (from_utf8(t.0).ok(), t.1));
-        for (k, v) in dict_tuples {
-            match k {
-                Some(k) => dict.insert(k, v),
-                None => {
-                    return Err(ParseError::User {
-                        error: BencError::ParseError,
-                    })
-                }
-            };
+        for (k, v) in list {
+            dict.insert(k, v);
         }
 
         Ok(Bencode::Dict(dict))
@@ -73,7 +58,6 @@ impl<'a> Bencode<'a> {
 
     pub fn byte_str(self) -> Option<&'a [u8]> {
         match self {
-            Bencode::BStr(b) => Some(b),
             Bencode::Str(s) => Some(s.as_bytes()),
             _ => None,
         }
@@ -145,7 +129,7 @@ pub enum Token<'a> {
     Num(i64),
 
     #[regex("[0-9]+:", Token::lex_str)]
-    Str((u32, &'a [u8])), // TODO - remove length?
+    Str((u32, &'a str)), // TODO - remove length?
 
     #[error]
     Error,
@@ -161,7 +145,7 @@ impl<'a> Token<'a> {
             })
     }
 
-    fn lex_str(lex: &mut Lexer<'a, Token<'a>>) -> Option<(u32, &'a [u8])> {
+    fn lex_str(lex: &mut Lexer<'a, Token<'a>>) -> Option<(u32, &'a str)> {
         let len_slice = lex.slice();
         let len = len_slice[..len_slice.len() - 1].parse::<u32>().ok()?;
         let remainder = lex.remainder();
@@ -170,7 +154,7 @@ impl<'a> Token<'a> {
             let str = &lex.remainder()[..len as usize];
             lex.bump(len as usize);
 
-            Some((len, str.as_bytes()))
+            Some((len, str))
         } else {
             None
         }
