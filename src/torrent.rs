@@ -3,9 +3,6 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::vec;
 
-// TODO - transformation pipelines ==>
-//   RawTorrent (decoded to struct repr of bytes) ->
-//   Torrent (dev friendly to work with)
 #[derive(Debug, PartialEq)]
 struct RawTorrent<'a> {
     announce: &'a str,
@@ -144,18 +141,28 @@ impl<'a> Torrent<'a> {
             }])
         } else {
             // multi file case
-            Some(info.files?.into_iter().map(File::from).collect())
+            let mut files = vec![];
+            for raw_file in info.files? {
+                match File::try_from(raw_file) {
+                    Ok(f) => files.push(f),
+                    _ => return None,
+                }
+            }
+
+            Some(files)
         }
     }
 }
 
-impl<'a> From<RawFile<'a>> for File<'a> {
-    fn from(rf: RawFile<'a>) -> Self {
-        File {
+impl<'a> TryFrom<RawFile<'a>> for File<'a> {
+    type Error = ();
+
+    fn try_from(rf: RawFile<'a>) -> Result<Self, Self::Error> {
+        Ok(File {
             path: rf.path,
-            length: rf.length as u64, // todo: fails if length < 0
+            length: u64::try_from(rf.length).map_err(|_| ())?, // negative legnths should be invalid
             md5sum: rf.md5sum,
-        }
+        })
     }
 }
 
