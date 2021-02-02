@@ -30,6 +30,7 @@ impl<'a> Bencode<'a> {
             });
         }
 
+        // todo: -i64::MAX => valid?
         Ok(Bencode::Num(if sign.is_some() { -n } else { n }))
     }
 
@@ -63,6 +64,56 @@ impl<'a> Bencode<'a> {
         Ok(Bencode::Dict(dict))
     }
 
+    pub fn str(self) -> Option<&'a str> {
+        match self {
+            Bencode::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn byte_str(self) -> Option<&'a [u8]> {
+        match self {
+            Bencode::BStr(b) => Some(b),
+            Bencode::Str(s) => Some(s.as_bytes()),
+            _ => None,
+        }
+    }
+
+    pub fn num(self) -> Option<i64> {
+        match self {
+            Bencode::Num(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn list(self) -> Option<Vec<Bencode<'a>>> {
+        match self {
+            Bencode::List(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    pub fn dict(self) -> Option<HashMap<&'a str, Bencode<'a>>> {
+        match self {
+            Bencode::Dict(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    pub fn map_list<U>(self, f: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
+        match self {
+            Bencode::List(l) => {
+                let mut v = Vec::with_capacity(l.len());
+                for b in l {
+                    v.push(f(b)?);
+                }
+
+                Some(v)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]

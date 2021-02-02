@@ -1,5 +1,6 @@
 mod bencode;
+mod torrent;
 
 pub fn do_nothing() -> Option<()> {
-    bencode::Bencode::decode("hello").ok().map(|_| ())
+    torrent::Torrent::decode("hello").map(|_| ())
 }
