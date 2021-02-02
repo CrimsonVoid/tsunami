@@ -20,7 +20,7 @@ extern {
         "e" => Token::E,
         ":" => Token::Colon,
         "-" => Token::Minus,
-        Num => Token::Num(<i64>),
+        Num => Token::Num(<&'i str>),
         Str => Token::Str(<&'i str>),
     }
 }

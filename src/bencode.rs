@@ -1,6 +1,6 @@
 use lalrpop_util::{lalrpop_mod, ParseError};
 use logos::{Lexer, Logos};
-use std::collections::HashMap;
+use std::{collections::HashMap, num};
 
 type Spanned<Tok, Loc, Error> = Result<(Loc, Tok, Loc), Error>;
 type DecodeResult<'a> = Result<Bencode<'a>, ParseError<usize, Token<'a>, BencError>>;
@@ -21,14 +21,27 @@ impl<'a> Bencode<'a> {
         parser.parse(input, lex)
     }
 
-    pub fn decode_num(sign: Option<Token>, n: i64) -> DecodeResult {
-        if sign.is_some() && n == 0 {
+    pub fn decode_num(sign: Option<Token<'a>>, num: &'a str) -> DecodeResult<'a> {
+        if sign.is_some() && num == "0" {
             return Err(ParseError::User {
                 error: BencError::NegativeZero,
             });
         }
 
-        // todo: -i64::MAX => valid?
+        if sign.is_some() && num == "9223372036854775808" {
+            // 9223372036854775808 (-i64::MIN) > i64::MAX
+            return Ok(Bencode::Num(-9223372036854775808));
+        }
+
+        let n: i64 = match num.parse() {
+            Ok(i) => i,
+            Err(e) => {
+                return Err(ParseError::User {
+                    error: BencError::ParseIntError(e),
+                })
+            }
+        };
+
         Ok(Bencode::Num(if sign.is_some() { -n } else { n }))
     }
 
@@ -40,7 +53,6 @@ impl<'a> Bencode<'a> {
             });
         }
 
-        // TODO - what if keys are not utf-8?
         let mut dict = HashMap::new();
         for (k, v) in list {
             dict.insert(k, v);
@@ -105,6 +117,7 @@ pub enum BencError {
     NegativeZero,
     DictKeysNotSorted,
     ParseError,
+    ParseIntError(num::ParseIntError),
 }
 
 lalrpop_mod!(pub bencode_lexer);
@@ -124,9 +137,9 @@ pub enum Token<'a> {
     #[token("-")]
     Minus,
 
-    #[token("0", |_| 0)]
-    #[regex("[1-9][0-9]*", |lex| lex.slice().parse())]
-    Num(i64),
+    #[token("0", |_| "0")]
+    #[regex("[1-9][0-9]*")]
+    Num(&'a str),
 
     #[regex("[0-9]+:", Token::lex_str)]
     Str(&'a str),
@@ -186,6 +199,7 @@ mod tests {
             ("i562949953421312e", 562949953421312),
             ("i-562949953421312e", -562949953421312),
             ("i9223372036854775807e", 9223372036854775807),
+            ("i-9223372036854775808e", -9223372036854775808),
         ];
 
         lex_tests_helper(cases, |n| B::Num(n));
