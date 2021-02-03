@@ -1,6 +1,6 @@
-use crate::bencode::Bencode;
+use crate::{bencode::Bencode, utils};
 use std::collections::HashMap;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::vec;
 
 #[derive(Debug, PartialEq)]
@@ -55,7 +55,7 @@ impl<'a> RawTorrent<'a> {
             encoding: torrent.remove("encoding").and_then(Bencode::str),
             info: RawInfo {
                 piece_length: info.remove("piece length")?.num()?,
-                pieces: info.remove("pieces")?.byte_str()?,
+                pieces: info.remove("pieces")?.str()?.as_bytes(),
                 private: info.remove("private")?.num(),
                 name: info.remove("name")?.str()?,
                 length: info.remove("length").and_then(Bencode::num),
@@ -68,7 +68,7 @@ impl<'a> RawTorrent<'a> {
     }
 }
 
-impl<'a> RawInfo<'a> {
+impl RawInfo<'_> {
     fn is_multi_file(&self) -> bool {
         self.length.is_some()
     }
@@ -85,83 +85,90 @@ impl<'a> RawFile<'a> {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Torrent<'a> {
-    announce_list: Vec<Vec<&'a str>>,
-    info: Info<'a>,
+pub struct Torrent {
+    announce_list: Vec<Vec<String>>,
+    info: Info,
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Info<'a> {
+pub struct Info {
     piece_length: u32,
-    pieces: &'a [u8],
+    pieces: Vec<[u8; 20]>,
     private: bool,
 
-    dir_name: &'a str, // "" == single file (files.len() == 1)
-    files: Vec<File<'a>>,
+    dir_name: String, // "" == single file (files.len() == 1)
+    files: Vec<File>,
 }
 
 #[derive(Debug, PartialEq)]
-pub struct File<'a> {
+pub struct File {
     // looks like torrent files don't contain empty folders or files
-    path: Vec<&'a str>, // path.concat("/")
+    path: Vec<String>, // path.concat("/")
     length: u64,
-    md5sum: Option<&'a str>,
+    md5sum: Option<String>,
 }
 
-impl<'a> Torrent<'a> {
-    pub fn decode(torrent_file: &'a str) -> Option<Torrent> {
+impl Torrent {
+    pub fn decode(torrent_file: &str) -> Option<Torrent> {
         let torrent = RawTorrent::decode(torrent_file)?;
 
-        Some(Torrent {
-            announce_list: torrent
-                .announce_list
-                .unwrap_or(vec![vec![torrent.announce]]),
+        let announce_list = match torrent.announce_list {
+            Some(lss) => lss
+                .into_iter()
+                .map(|ls| ls.into_iter().map(|l| l.into()).collect())
+                .collect(),
+            None => vec![vec![torrent.announce.into()]],
+        };
 
+        if torrent.info.pieces.len() % 20 != 0 {
+            return None;
+        }
+
+        let pieces = torrent
+            .info
+            .pieces
+            .chunks(20)
+            .map(|p| p.try_into().unwrap())
+            .collect();
+
+        Some(Torrent {
+            announce_list: announce_list,
             info: Info {
-                piece_length: u32::try_from(torrent.info.piece_length).ok()?,
-                pieces: torrent.info.pieces,
+                piece_length: torrent.info.piece_length.try_into().ok()?,
+                pieces: pieces,
                 private: torrent.info.private == Some(1),
                 dir_name: if torrent.info.is_multi_file() {
-                    ""
+                    "".into()
                 } else {
-                    torrent.info.name
+                    torrent.info.name.into()
                 },
                 files: Self::build_files(torrent.info)?,
             },
         })
     }
 
-    fn build_files(info: RawInfo<'a>) -> Option<Vec<File<'a>>> {
+    fn build_files(info: RawInfo) -> Option<Vec<File>> {
         if info.is_multi_file() {
             // single file case
             Some(vec![File {
-                path: vec![info.name],
+                path: vec![info.name.into()],
                 length: info.length? as u64,
-                md5sum: info.md5sum,
+                md5sum: info.md5sum.map(|m| m.into()),
             }])
         } else {
-            // multi file case
-            let mut files = vec![];
-            for raw_file in info.files? {
-                match File::try_from(raw_file) {
-                    Ok(f) => files.push(f),
-                    _ => return None,
-                }
-            }
-
-            Some(files)
+            utils::map_vec(info.files?, |f| f.try_into().ok())
         }
     }
 }
 
-impl<'a> TryFrom<RawFile<'a>> for File<'a> {
+impl TryFrom<RawFile<'_>> for File {
     type Error = ();
 
-    fn try_from(rf: RawFile<'a>) -> Result<Self, Self::Error> {
+    fn try_from(rf: RawFile) -> Result<Self, Self::Error> {
         Ok(File {
-            path: rf.path,
-            length: u64::try_from(rf.length).map_err(|_| ())?, // negative legnths should be invalid
-            md5sum: rf.md5sum,
+            path: rf.path.into_iter().map(|p| p.into()).collect(),
+            length: rf.length.try_into().map_err(|_| ())?, // negative legnths are invalid
+            md5sum: rf.md5sum.map(|m| m.into()),
         })
     }
 }
@@ -173,12 +180,28 @@ mod tests {
 
     #[test]
     fn decode_torrent() {
-        let file = unsafe { from_utf8_unchecked(include_bytes!("test_data/mock_dir.torrent")) };
-        println!("{:#?}", Torrent::decode(file).unwrap());
+        let test_files = [
+            (
+                unsafe { from_utf8_unchecked(include_bytes!("test_data/mock_dir.torrent")) },
+                "mock",
+            ),
+            (
+                unsafe { from_utf8_unchecked(include_bytes!("test_data/mock_file.torrent")) },
+                "",
+            ),
+        ];
 
-        let file = unsafe { from_utf8_unchecked(include_bytes!("test_data/mock_file.torrent")) };
-        println!("{:#?}", Torrent::decode(file).unwrap());
+        for file in test_files.iter() {
+            let pieces: Vec<[u8; 20]> = vec![[
+                0, 72, 105, 249, 236, 50, 141, 28, 177, 230, 77, 80, 106, 67, 249, 35, 207, 173,
+                235, 151,
+            ]];
 
-        assert!(false);
+            let torrent = Torrent::decode(file.0).unwrap();
+            println!("{:?}", torrent);
+
+            assert_eq!(torrent.info.dir_name, file.1);
+            assert_eq!(torrent.info.pieces, pieces);
+        }
     }
 }

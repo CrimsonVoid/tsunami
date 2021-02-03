@@ -1,3 +1,4 @@
+use crate::utils;
 use lalrpop_util::{lalrpop_mod, ParseError};
 use logos::{Lexer, Logos};
 use std::{collections::HashMap, num};
@@ -23,9 +24,8 @@ impl<'a> Bencode<'a> {
 
     pub fn decode_num(sign: Option<Token<'a>>, num: &'a str) -> DecodeResult<'a> {
         if sign.is_some() && num == "0" {
-            return Err(ParseError::User {
-                error: BencError::NegativeZero,
-            });
+            // -0 is invalid
+            return BencError::NegativeZero.into();
         }
 
         if sign.is_some() && num == "9223372036854775808" {
@@ -33,44 +33,22 @@ impl<'a> Bencode<'a> {
             return Ok(Bencode::Num(-9223372036854775808));
         }
 
-        let n: i64 = match num.parse() {
-            Ok(i) => i,
-            Err(e) => {
-                return Err(ParseError::User {
-                    error: BencError::ParseIntError(e),
-                })
-            }
-        };
-
-        Ok(Bencode::Num(if sign.is_some() { -n } else { n }))
+        match num.parse::<i64>() {
+            Ok(n) => Ok(Bencode::Num(if sign.is_some() { -n } else { n })),
+            Err(e) => BencError::ParseIntError(e).into(),
+        }
     }
 
     pub fn decode_dict(list: Vec<(&'a str, Bencode<'a>)>) -> DecodeResult<'a> {
-        // check keys are in sorted order
-        if !list[..].windows(2).all(|w| w[0].0 < w[1].0) {
-            return Err(ParseError::User {
-                error: BencError::DictKeysNotSorted,
-            });
+        match list[..].windows(2).all(|w| w[0].0 < w[1].0) {
+            true => Ok(Bencode::Dict(list.into_iter().collect())),
+            false => BencError::DictKeysNotSorted.into(),
         }
-
-        let mut dict = HashMap::new();
-        for (k, v) in list {
-            dict.insert(k, v);
-        }
-
-        Ok(Bencode::Dict(dict))
     }
 
     pub fn str(self) -> Option<&'a str> {
         match self {
             Bencode::Str(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn byte_str(self) -> Option<&'a [u8]> {
-        match self {
-            Bencode::Str(s) => Some(s.as_bytes()),
             _ => None,
         }
     }
@@ -82,14 +60,6 @@ impl<'a> Bencode<'a> {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn list(self) -> Option<Vec<Bencode<'a>>> {
-        match self {
-            Bencode::List(l) => Some(l),
-            _ => None,
-        }
-    }
-
     pub fn dict(self) -> Option<HashMap<&'a str, Bencode<'a>>> {
         match self {
             Bencode::Dict(d) => Some(d),
@@ -97,16 +67,9 @@ impl<'a> Bencode<'a> {
         }
     }
 
-    pub fn map_list<U>(self, f: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
+    pub fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
         match self {
-            Bencode::List(l) => {
-                let mut v = Vec::with_capacity(l.len());
-                for b in l {
-                    v.push(f(b)?);
-                }
-
-                Some(v)
-            }
+            Bencode::List(l) => utils::map_vec(l, op),
             _ => None,
         }
     }
@@ -118,6 +81,12 @@ pub enum BencError {
     DictKeysNotSorted,
     ParseError,
     ParseIntError(num::ParseIntError),
+}
+
+impl<'a> From<BencError> for DecodeResult<'a> {
+    fn from(err: BencError) -> Self {
+        Err(ParseError::User { error: err })
+    }
 }
 
 lalrpop_mod!(pub bencode_lexer);
@@ -160,12 +129,12 @@ impl<'a> Token<'a> {
 
     fn lex_str(lex: &mut Lexer<'a, Token<'a>>) -> Option<&'a str> {
         let len_slice = lex.slice();
-        let len = len_slice[..len_slice.len() - 1].parse::<u32>().ok()?;
+        let len = len_slice[..len_slice.len() - 1].parse::<u32>().ok()? as usize; // limit string length to u32::MAX
         let remainder = lex.remainder();
 
-        if remainder.len() >= len as usize {
-            let str = &lex.remainder()[..len as usize];
-            lex.bump(len as usize);
+        if remainder.len() >= len {
+            let str = &lex.remainder()[..len];
+            lex.bump(len);
 
             Some(str)
         } else {
@@ -198,8 +167,8 @@ mod tests {
             ("i-5e", -5),
             ("i562949953421312e", 562949953421312),
             ("i-562949953421312e", -562949953421312),
-            ("i9223372036854775807e", 9223372036854775807),
-            ("i-9223372036854775808e", -9223372036854775808),
+            ("i9223372036854775807e", i64::MAX),
+            ("i-9223372036854775808e", i64::MIN),
         ];
 
         lex_tests_helper(cases, |n| B::Num(n));
