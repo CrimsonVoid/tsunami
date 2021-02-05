@@ -1,9 +1,10 @@
 use crate::utils;
 use lalrpop_util::{lalrpop_mod, ParseError};
 use logos::{Lexer, Logos};
-use std::{collections::HashMap, num};
+use std::collections::HashMap;
+use std::num;
 
-type Spanned<Tok, Loc, Error> = Result<(Loc, Tok, Loc), Error>;
+type Spanned<Token, Loc, Error> = Result<(Loc, Token, Loc), Error>;
 type DecodeResult<'a> = Result<Bencode<'a>, ParseError<usize, Token<'a>, BencError>>;
 
 #[derive(Debug, PartialEq)]
@@ -20,23 +21,6 @@ impl<'a> Bencode<'a> {
 
         let lex = Token::lexer(input);
         parser.parse(input, lex)
-    }
-
-    pub fn decode_num(sign: Option<Token<'a>>, num: &'a str) -> DecodeResult<'a> {
-        if sign.is_some() && num == "0" {
-            // -0 is invalid
-            return BencError::NegativeZero.into();
-        }
-
-        if sign.is_some() && num == "9223372036854775808" {
-            // 9223372036854775808 (-i64::MIN) > i64::MAX
-            return Ok(Bencode::Num(-9223372036854775808));
-        }
-
-        match num.parse::<i64>() {
-            Ok(n) => Ok(Bencode::Num(if sign.is_some() { -n } else { n })),
-            Err(e) => BencError::ParseIntError(e).into(),
-        }
     }
 
     pub fn decode_dict(list: Vec<(&'a str, Bencode<'a>)>) -> DecodeResult<'a> {
@@ -103,12 +87,9 @@ pub enum Token<'a> {
     E,
     #[token(":")]
     Colon,
-    #[token("-")]
-    Minus,
 
-    #[token("0", |_| "0")]
-    #[regex("[1-9][0-9]*")]
-    Num(&'a str),
+    #[regex("-?[0-9]+", Token::lex_num)]
+    Num(i64),
 
     #[regex("[0-9]+:", Token::lex_str)]
     Str(&'a str),
@@ -128,8 +109,7 @@ impl<'a> Token<'a> {
     }
 
     fn lex_str(lex: &mut Lexer<'a, Token<'a>>) -> Option<&'a str> {
-        let len_slice = lex.slice();
-        let len = len_slice[..len_slice.len() - 1].parse::<u32>().ok()? as usize; // limit string length to u32::MAX
+        let len = lex.slice().trim_end_matches(":").parse::<u32>().ok()? as usize; // limit string length to u32::MAX
         let remainder = lex.remainder();
 
         if remainder.len() >= len {
@@ -140,6 +120,28 @@ impl<'a> Token<'a> {
         } else {
             None
         }
+    }
+
+    fn lex_num(lex: &mut Lexer<'a, Token<'a>>) -> Option<i64> {
+        let num_str = lex.slice();
+
+        let num = if num_str.starts_with("-") {
+            &num_str[1..]
+        } else {
+            num_str
+        };
+
+        if num.starts_with("0") && num.len() > 1 {
+            // numbers cannot be prefixed with zeroes (i02e is invalid)
+            return None;
+        }
+
+        if num_str == "-0" {
+            // -0 is invalid
+            return None;
+        }
+
+        num_str.parse().ok()
     }
 }
 

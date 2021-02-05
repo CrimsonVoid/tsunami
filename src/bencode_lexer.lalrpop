@@ -3,10 +3,10 @@ use crate::bencode::{Token, Bencode, BencError};
 grammar<'i>(input: &'i str);
 
 pub Benc: Bencode<'i> = {
-    "i" <("-")?> <Num> "e" =>? Bencode::decode_num(<>),
-    Str                    =>  Bencode::Str(<>),
-    "l" <Benc*> "e"        =>  Bencode::List(<>),
-    "d" <(Str Benc)*> "e"  =>? Bencode::decode_dict(<>),
+    "i" <Num> "e"         =>  Bencode::Num(<>),
+    Str                   =>  Bencode::Str(<>),
+    "l" <Benc*> "e"       =>  Bencode::List(<>),
+    "d" <(Str Benc)*> "e" =>? Bencode::decode_dict(<>),
 }
 
 extern {
@@ -19,8 +19,7 @@ extern {
         "d" => Token::D,
         "e" => Token::E,
         ":" => Token::Colon,
-        "-" => Token::Minus,
-        Num => Token::Num(<&'i str>),
+        Num => Token::Num(<i64>),
         Str => Token::Str(<&'i str>),
     }
 }
