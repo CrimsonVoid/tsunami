@@ -53,7 +53,7 @@ impl<'a> Bencode<'a> {
 
     pub fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
         match self {
-            Bencode::List(l) => utils::map_vec(l, op),
+            Bencode::List(l) => utils::flat_map_all(l, op),
             _ => None,
         }
     }
@@ -113,7 +113,7 @@ impl<'a> Token<'a> {
         let remainder = lex.remainder();
 
         if remainder.len() >= len {
-            let str = &lex.remainder()[..len];
+            let str = &remainder[..len];
             lex.bump(len);
 
             Some(str)
@@ -234,7 +234,7 @@ mod tests {
                         B::Num(3),
                         B::Str("hi"),
                         B::Dict(hashmap! {
-                            "list"    => B::List(vec!(B::Num(1), B::Num(2), B::Num(3))),
+                            "list"    => B::List(vec![B::Num(1), B::Num(2), B::Num(3)]),
                             "yahallo" => B::Str(":)"),
                         }),
                     ]),
@@ -271,10 +271,10 @@ mod tests {
                     "announce"      => B::Str("http://tracker.example.com:8080/announce"),
                     "comment"       => B::Str("\"Hello mock data\""),
                     "creation date" => B::Num(1234567890),
-                    "httpseeds"     => B::List(vec!(
+                    "httpseeds"     => B::List(vec![
                         B::Str("http://direct.example.com/mock1"),
                         B::Str("http://direct.example.com/mock2"),
-                    )),
+                    ]),
                     "info" => B::Dict(hashmap!(
                         "length"       => B::Num(562949953421312),
                         "name"         => B::Str("あいえおう"),

@@ -4,7 +4,7 @@ use std::convert::{TryFrom, TryInto};
 use std::vec;
 
 #[derive(Debug, PartialEq)]
-struct RawTorrent<'a> {
+struct TorrentAST<'a> {
     announce: &'a str,
     announce_list: Option<Vec<Vec<&'a str>>>,
     comment: Option<&'a str>,
@@ -12,11 +12,11 @@ struct RawTorrent<'a> {
     creation_date: Option<i64>,
     encoding: Option<&'a str>,
 
-    info: RawInfo<'a>,
+    info: InfoAST<'a>,
 }
 
 #[derive(Debug, PartialEq)]
-struct RawInfo<'a> {
+struct InfoAST<'a> {
     piece_length: i64,
     pieces: &'a [u8],
     private: Option<i64>,
@@ -27,24 +27,24 @@ struct RawInfo<'a> {
     md5sum: Option<&'a str>,
 
     // multi-file
-    files: Option<Vec<RawFile<'a>>>,
+    files: Option<Vec<FileAST<'a>>>,
 }
 
 #[derive(Debug, PartialEq)]
-struct RawFile<'a> {
+struct FileAST<'a> {
     path: Vec<&'a str>,
     length: i64,
     md5sum: Option<&'a str>,
 }
 
-impl<'a> RawTorrent<'a> {
-    fn decode(file: &'a str) -> Option<RawTorrent<'a>> {
+impl<'a> TorrentAST<'a> {
+    fn decode(file: &'a str) -> Option<TorrentAST<'a>> {
         let benc = Bencode::decode(file).ok()?;
 
         let mut torrent = benc.dict()?;
         let mut info = torrent.remove("info")?.dict()?;
 
-        Some(RawTorrent {
+        Some(TorrentAST {
             announce: torrent.remove("announce").and_then(Bencode::str)?,
             announce_list: torrent
                 .remove("announce-list")
@@ -53,7 +53,7 @@ impl<'a> RawTorrent<'a> {
             created_by: torrent.remove("created by").and_then(Bencode::str),
             creation_date: torrent.remove("creation date").and_then(Bencode::num),
             encoding: torrent.remove("encoding").and_then(Bencode::str),
-            info: RawInfo {
+            info: InfoAST {
                 piece_length: info.remove("piece length")?.num()?,
                 pieces: info.remove("pieces")?.str()?.as_bytes(),
                 private: info.remove("private")?.num(),
@@ -62,21 +62,21 @@ impl<'a> RawTorrent<'a> {
                 md5sum: info.remove("md5sum").and_then(Bencode::str),
                 files: info
                     .remove("files")
-                    .and_then(|f| f.map_list(|b| RawFile::decode(b.dict()?))),
+                    .and_then(|f| f.map_list(|b| FileAST::decode(b.dict()?))),
             },
         })
     }
 }
 
-impl RawInfo<'_> {
-    fn is_multi_file(&self) -> bool {
+impl InfoAST<'_> {
+    fn single_file(&self) -> bool {
         self.length.is_some()
     }
 }
 
-impl<'a> RawFile<'a> {
-    fn decode(mut file: HashMap<&'a str, Bencode<'a>>) -> Option<RawFile<'a>> {
-        Some(RawFile {
+impl<'a> FileAST<'a> {
+    fn decode(mut file: HashMap<&'a str, Bencode<'a>>) -> Option<FileAST<'a>> {
+        Some(FileAST {
             path: file.remove("path")?.map_list(|p| p.str())?,
             length: file.remove("length")?.num()?,
             md5sum: file.remove("md5sum").and_then(|s| s.str()),
@@ -110,7 +110,7 @@ pub struct File {
 
 impl Torrent {
     pub fn decode(torrent_file: &str) -> Option<Torrent> {
-        let torrent = RawTorrent::decode(torrent_file)?;
+        let torrent = TorrentAST::decode(torrent_file)?;
 
         let announce_list = match torrent.announce_list {
             Some(lss) => lss
@@ -137,7 +137,7 @@ impl Torrent {
                 piece_length: torrent.info.piece_length.try_into().ok()?,
                 pieces: pieces,
                 private: torrent.info.private == Some(1),
-                dir_name: if torrent.info.is_multi_file() {
+                dir_name: if torrent.info.single_file() {
                     "".into()
                 } else {
                     torrent.info.name.into()
@@ -147,8 +147,8 @@ impl Torrent {
         })
     }
 
-    fn build_files(info: RawInfo) -> Option<Vec<File>> {
-        if info.is_multi_file() {
+    fn build_files(info: InfoAST) -> Option<Vec<File>> {
+        if info.single_file() {
             // single file case
             Some(vec![File {
                 path: vec![info.name.into()],
@@ -156,18 +156,18 @@ impl Torrent {
                 md5sum: info.md5sum.map(|m| m.into()),
             }])
         } else {
-            utils::map_vec(info.files?, |f| f.try_into().ok())
+            utils::flat_map_all(info.files?, |f| f.try_into().ok())
         }
     }
 }
 
-impl TryFrom<RawFile<'_>> for File {
+impl TryFrom<FileAST<'_>> for File {
     type Error = ();
 
-    fn try_from(rf: RawFile) -> Result<Self, Self::Error> {
+    fn try_from(rf: FileAST) -> Result<Self, Self::Error> {
         Ok(File {
             path: rf.path.into_iter().map(|p| p.into()).collect(),
-            length: rf.length.try_into().map_err(|_| ())?, // negative legnths are invalid
+            length: rf.length.try_into().map_err(|_| ())?, // negative lengths are invalid
             md5sum: rf.md5sum.map(|m| m.into()),
         })
     }

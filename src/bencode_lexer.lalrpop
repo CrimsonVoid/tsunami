@@ -3,8 +3,8 @@ use crate::bencode::{Token, Bencode, BencError};
 grammar<'i>(input: &'i str);
 
 pub Benc: Bencode<'i> = {
-    "i" <Num> "e"         =>  Bencode::Num(<>),
     Str                   =>  Bencode::Str(<>),
+    "i" <Num> "e"         =>  Bencode::Num(<>),
     "l" <Benc*> "e"       =>  Bencode::List(<>),
     "d" <(Str Benc)*> "e" =>? Bencode::decode_dict(<>),
 }
