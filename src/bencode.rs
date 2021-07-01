@@ -1,4 +1,4 @@
-use crate::utils;
+use crate::utils::IterExt;
 use lalrpop_util::{lalrpop_mod, ParseError};
 use logos::{Lexer, Logos};
 use std::collections::HashMap;
@@ -53,7 +53,7 @@ impl<'a> Bencode<'a> {
 
     pub fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
         match self {
-            Bencode::List(l) => utils::flat_map_all(l, op),
+            Bencode::List(l) => l.into_iter().flat_map_all(op),
             _ => None,
         }
     }

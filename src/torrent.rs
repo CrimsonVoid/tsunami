@@ -1,4 +1,4 @@
-use crate::{bencode::Bencode, utils};
+use crate::{bencode::Bencode, utils::IterExt};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::vec;
@@ -112,14 +112,6 @@ impl Torrent {
     pub fn decode(torrent_file: &str) -> Option<Torrent> {
         let torrent = TorrentAST::decode(torrent_file)?;
 
-        let announce_list = match torrent.announce_list {
-            Some(lss) => lss
-                .into_iter()
-                .map(|ls| ls.into_iter().map(|l| l.into()).collect())
-                .collect(),
-            None => vec![vec![torrent.announce.into()]],
-        };
-
         if torrent.info.pieces.len() % 20 != 0 {
             return None;
         }
@@ -130,6 +122,14 @@ impl Torrent {
             .chunks(20)
             .map(|p| p.try_into().unwrap())
             .collect();
+
+        let announce_list = match torrent.announce_list {
+            Some(lss) => lss
+                .into_iter()
+                .map(|ls| ls.into_iter().map(|l| l.into()).collect())
+                .collect(),
+            None => vec![vec![torrent.announce.into()]],
+        };
 
         Some(Torrent {
             announce_list: announce_list,
@@ -156,7 +156,7 @@ impl Torrent {
                 md5sum: info.md5sum.map(|m| m.into()),
             }])
         } else {
-            utils::flat_map_all(info.files?, |f| f.try_into().ok())
+            info.files?.into_iter().flat_map_all(|f| f.try_into().ok())
         }
     }
 }
@@ -191,16 +191,16 @@ mod tests {
             ),
         ];
 
-        for file in test_files.iter() {
+        for (file, dir_name) in &test_files[..] {
             let pieces: Vec<[u8; 20]> = vec![[
                 0, 72, 105, 249, 236, 50, 141, 28, 177, 230, 77, 80, 106, 67, 249, 35, 207, 173,
                 235, 151,
             ]];
 
-            let torrent = Torrent::decode(file.0).unwrap();
+            let torrent = Torrent::decode(file).unwrap();
             println!("{:?}", torrent);
 
-            assert_eq!(torrent.info.dir_name, file.1);
+            assert_eq!(torrent.info.dir_name, *dir_name);
             assert_eq!(torrent.info.pieces, pieces);
         }
     }
