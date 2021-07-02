@@ -1,6 +1,6 @@
 use crate::bencode::{Token, Bencode, BencError};
 
-grammar<'i>(input: &'i str);
+grammar<'i>;
 
 pub Benc: Bencode<'i> = {
     Str                   =>  Bencode::Str(<>),

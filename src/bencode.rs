@@ -18,9 +18,9 @@ pub enum Bencode<'a> {
 impl<'a> Bencode<'a> {
     pub fn decode(input: &str) -> DecodeResult {
         let parser = bencode_lexer::BencParser::new();
-
         let lex = Token::lexer(input);
-        parser.parse(input, lex)
+
+        parser.parse(lex)
     }
 
     pub fn decode_dict(list: Vec<(&'a str, Bencode<'a>)>) -> DecodeResult<'a> {
@@ -299,7 +299,7 @@ mod tests {
 
         for (input, expected) in cases {
             let lex = Token::lexer(input);
-            let res = parser.parse(input, lex);
+            let res = parser.parse(lex);
 
             assert_eq!(res, Ok(f(expected)));
         }
@@ -310,7 +310,7 @@ mod tests {
 
         for input in cases {
             let lex = Token::lexer(input);
-            let res = parser.parse(input, lex);
+            let res = parser.parse(lex);
 
             assert!(res.is_err());
         }
