@@ -1,4 +1,5 @@
-use crate::{bencode::Bencode, utils::IterExt};
+use crate::bencode::Bencode;
+use crate::utils::IterExt;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::vec;
@@ -88,6 +89,7 @@ impl<'a> FileAST<'a> {
 pub struct Torrent {
     announce_list: Vec<Vec<String>>,
     info: Info,
+    info_hash: [u8; 20],
 }
 
 #[derive(Debug, PartialEq)]
@@ -133,6 +135,7 @@ impl Torrent {
 
         Some(Torrent {
             announce_list: announce_list,
+
             info: Info {
                 piece_length: torrent.info.piece_length.try_into().ok()?,
                 pieces: pieces,
@@ -144,6 +147,7 @@ impl Torrent {
                 },
                 files: Self::build_files(torrent.info)?,
             },
+            info_hash: Bencode::info_hash(torrent_file)?,
         })
     }
 

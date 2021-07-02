@@ -1,7 +1,9 @@
 use crate::utils::IterExt;
 use lalrpop_util::{lalrpop_mod, ParseError};
 use logos::{Lexer, Logos};
+use ring::digest;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::num;
 
 type Spanned<Token, Loc, Error> = Result<(Loc, Token, Loc), Error>;
@@ -56,6 +58,76 @@ impl<'a> Bencode<'a> {
             Bencode::List(l) => l.into_iter().flat_map_all(op),
             _ => None,
         }
+    }
+
+    // compute a SHA-1 hash of an info dictionary found in torrent_file
+    pub fn info_hash(torrent_file: &'a str) -> Option<[u8; 20]> {
+        // torrent_file format:
+        // d ... 4:infod ... e ... e
+        //    start -> [     ] <- end
+        //
+        // sha1.sum( &torrent_file[start..=end] )
+
+        let mut tokens = <Token as Logos>::lexer(torrent_file).spanned();
+
+        // torrent files are dictionaries
+        if !matches!(tokens.next()?, (Token::D, _)) {
+            return None;
+        }
+
+        let start = {
+            // nest_level tracks how deep we are in a record. every time we encounter the start of
+            // a bencode token (I, L, or D) we increment nest_level by one. likewise, when we
+            // find the end of a token (E) nest_level is decremented by one. this way we can track
+            // if we found a top-level "info" key.
+            let mut nest_level = 0;
+            let mut found = false;
+
+            while !found {
+                match tokens.next()?.0 {
+                    Token::Str("info") if nest_level == 0 => found = true,
+                    Token::I | Token::L | Token::D => nest_level += 1,
+                    Token::E => nest_level -= 1,
+                    Token::Error => return None,
+                    _ => {}
+                }
+            }
+
+            // found an "info" key, value should be a bencoded dict
+            match tokens.next()? {
+                (Token::D, range) => range.start,
+                _ => return None,
+            }
+        };
+
+        let end = {
+            // we are currently inside the info dict, and need to consume tokens until we get find
+            // the closing E token
+            let mut nest_level = 1;
+
+            while nest_level > 0 {
+                match tokens.next()?.0 {
+                    Token::I | Token::L | Token::D => nest_level += 1,
+                    Token::E => nest_level -= 1,
+                    Token::Error => return None,
+                    _ => {}
+                }
+            }
+
+            // we consumed the closing E tag and can't be sure what the next token will be, but
+            // there MUST be at least one more token since we are inside a dictionary
+            match tokens.next()? {
+                (_, range) => range.start,
+            }
+        };
+
+        digest::digest(
+            &digest::SHA1_FOR_LEGACY_USE_ONLY,
+            &torrent_file[start..end].as_bytes(),
+        )
+        .as_ref()
+        .try_into()
+        .ok()
     }
 }
 
@@ -149,6 +221,7 @@ impl<'a> Token<'a> {
 mod tests {
     use super::{bencode_lexer, Bencode as B, Token};
     use std::collections::HashMap;
+    use std::str::from_utf8_unchecked;
 
     macro_rules! hashmap {
         ($($k:expr => $v:expr),*) => ({
@@ -292,6 +365,60 @@ mod tests {
         let cases = vec!["d2:hi5:hello1:ai32ee"];
 
         lex_fail_tests_helper(cases);
+    }
+
+    #[test]
+    fn info_hash() {
+        let cases = vec![
+            (
+                concat!(
+                    "d8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
+                    "\"13:creation datei1234567890e",
+                    // torrent copy
+                    "4:demod",
+                    "8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
+                    "\"13:creation datei1234567890e",
+                    "9:httpseedsl31:http://direct.example.com/mock131:http",
+                    "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
+                    "iece lengthi536870912ee",
+                    "e",
+                    // torrent copy
+                    "9:httpseedsl31:http://direct.example.com/mock131:http",
+                    "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
+                    "iece lengthi536870912eee"
+                ),
+                [
+                    0x83, 0x55, 0x11, 0x80, 0x8c,
+                    0xd6, 0x54, 0x2c, 0x1b, 0xc5,
+                    0x19, 0x8d, 0x2a, 0x48, 0x9d,
+                    0xce, 0xd5, 0x2b, 0x53, 0x3a,
+                ],
+            ),
+            (
+                unsafe { from_utf8_unchecked(include_bytes!("test_data/mock_dir.torrent")) },
+                [
+                    0x74, 0x53, 0x68, 0x65, 0xe7,
+                    0x7a, 0xcc, 0x72, 0xf2, 0x98,
+                    0xc4, 0x88, 0xc3, 0x2c, 0x31,
+                    0xab, 0x9b, 0x96, 0x98, 0xb1,
+                ],
+            ),
+            (
+                unsafe { from_utf8_unchecked(include_bytes!("test_data/mock_file.torrent")) },
+                [
+                    0x0b, 0x05, 0xab, 0xa1, 0xf2,
+                    0xa0, 0xb2, 0xe6, 0xdc, 0x92,
+                    0xf1, 0xdb, 0x11, 0x43, 0x3e,
+                    0x5f, 0x3a, 0x82, 0x0b, 0xad,
+                ],
+            ),
+        ];
+
+        for (torrent, expected) in cases {
+            let info_hash = B::info_hash(torrent).unwrap();
+
+            assert_eq!(info_hash, expected);
+        }
     }
 
     fn lex_tests_helper<T>(cases: Vec<(&str, T)>, f: impl Fn(T) -> B<'static>) {
