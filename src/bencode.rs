@@ -46,6 +46,13 @@ impl<'a> Bencode<'a> {
         }
     }
 
+    pub fn list(self) -> Option<Vec<Bencode<'a>>> {
+        match self {
+            Bencode::List(v) => Some(v),
+            _ => None,
+        }
+    }
+
     pub fn dict(self) -> Option<HashMap<&'a str, Bencode<'a>>> {
         match self {
             Bencode::Dict(d) => Some(d),
@@ -54,10 +61,7 @@ impl<'a> Bencode<'a> {
     }
 
     pub fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
-        match self {
-            Bencode::List(l) => l.into_iter().flat_map_all(op),
-            _ => None,
-        }
+        self.list()?.into_iter().flat_map_all(op)
     }
 
     // compute a SHA-1 hash of an info dictionary found in torrent_file
@@ -157,8 +161,6 @@ pub enum Token<'a> {
     D,
     #[token("e")]
     E,
-    #[token(":")]
-    Colon,
 
     #[regex("-?[0-9]+", Token::lex_num)]
     Num(i64),

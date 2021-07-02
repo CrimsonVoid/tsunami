@@ -18,7 +18,6 @@ extern {
         "l" => Token::L,
         "d" => Token::D,
         "e" => Token::E,
-        ":" => Token::Colon,
         Num => Token::Num(<i64>),
         Str => Token::Str(<&'i str>),
     }
