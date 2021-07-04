@@ -10,6 +10,7 @@ build = "build.rs"
 [dependencies]
 lalrpop-util = "0.19.5"
 logos = "0.12.0"
+nom = "6.2.1"
 ring = "0.16.20"
 
 [build-dependencies]

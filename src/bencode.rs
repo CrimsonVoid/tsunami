@@ -1,6 +1,11 @@
 use crate::utils::IterExt;
 use lalrpop_util::{lalrpop_mod, ParseError};
 use logos::{Lexer, Logos};
+use nom::character::complete::{digit0, digit1};
+use nom::{
+    alt, char as nchar, delimited, length_data, many0, map, map_opt, map_res, named, one_of, opt,
+    recognize, tag, terminated, tuple,
+};
 use ring::digest;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -18,11 +23,85 @@ pub enum Bencode<'a> {
 }
 
 impl<'a> Bencode<'a> {
-    pub fn decode(input: &str) -> DecodeResult {
-        let parser = bencode_lexer::BencParser::new();
-        let lex = Token::lexer(input);
+    named!(
+        nom_benc(&'a str) -> Bencode,
+        alt!(
+            map!(Self::nom_str, Bencode::Str)
+                | map!(Self::nom_int, Bencode::Num)
+                | map!(Self::nom_list, Bencode::List)
+                | map!(Self::nom_dict, Bencode::Dict)
+        )
+    );
 
-        parser.parse(lex)
+    named!(
+        nom_str(&str) -> &str,
+        length_data!(
+            terminated!(
+                map_res!(digit1, |n: &str| n.parse::<usize>()),
+                nchar!(':')
+            )
+        )
+    );
+
+    named!(
+        // parse a valid bencoded int
+        //   pseudo format: i(\d+)e
+        //   invalid numbers:
+        //     - i-0e
+        //     - all encodings with a leading zero, eg. i-02e
+        //
+        // parsing rules:
+        //   - if a number starts with zero, no digits can follow it. the next tag must be "e"
+        //   - all valid, non-zero numbers must start with a non-zero digit and be
+        //     followed by zero or more digits. regex: (-?[1-9][0-9]+)
+        nom_int(&str) -> i64,
+        map_res!(
+            delimited!(
+                nchar!('i'),
+                alt!(
+                    tag!("0") |
+                    recognize!(tuple!( opt!(nchar!('-')), one_of!("123456789"), digit0 ))
+                ),
+                nchar!('e')
+            ),
+            |num: &str| num.parse()
+        )
+    );
+
+    named!(
+        nom_list(&'a str) -> Vec<Bencode>,
+        delimited!(nchar!('l'), many0!(Self::nom_benc), nchar!('e'))
+    );
+
+    named!(
+        nom_dict(&'a str) -> HashMap<&'a str, Bencode>,
+        map_opt!(
+            delimited!(
+                nchar!('d'),
+                many0!(tuple!(Self::nom_str, Self::nom_benc)),
+                nchar!('e')
+            ),
+            |keys: Vec<(&'a str, Bencode<'a>)>| {
+                keys.windows(2)
+                    .all(|w| w[0].0 < w[1].0)
+                    .then(|| keys.into_iter().collect())
+            }
+        )
+    );
+}
+
+impl<'a> Bencode<'a> {
+    pub fn decode(input: &str) -> DecodeResult {
+        let (rest, benc) = Bencode::nom_benc(input).map_err(|_| ParseError::User {
+            error: BencError::ParseError,
+        })?;
+
+        match rest {
+            "" => Ok(benc),
+            _ => Err(ParseError::User {
+                error: BencError::ParseError,
+            }),
+        }
     }
 
     pub fn decode_dict(list: Vec<(&'a str, Bencode<'a>)>) -> DecodeResult<'a> {
@@ -236,6 +315,152 @@ mod tests {
     }
 
     #[test]
+    fn parse_nom_int() {
+        let cases = vec![
+            ("i42e", 42),
+            ("i9e", 9),
+            ("i0e", 0),
+            ("i-5e", -5),
+            ("i562949953421312e", 562949953421312),
+            ("i-562949953421312e", -562949953421312),
+            ("i9223372036854775807e", i64::MAX),
+            ("i-9223372036854775808e", i64::MIN),
+        ];
+
+        for (input, expected) in cases {
+            let actual = B::nom_int(input).unwrap().1;
+            assert_eq!(actual, expected)
+        }
+
+        let cases = vec![
+            "e",
+            "i-0e",
+            "i00e",
+            "i05e",
+            "i18446744073709551615e",
+            "i-0e",
+            "i03e",
+        ];
+
+        for input in cases {
+            assert!(B::nom_int(input).is_err());
+        }
+    }
+
+    #[test]
+    fn parse_nom_str() {
+        let cases = vec![
+            ("5:hello", "hello"),
+            ("0:", ""),
+            ("7:yahallo", "yahallo"),
+            ("15:こんにちわ", "こんにちわ"),
+            ("7:\"hello\"", "\"hello\""),
+            ("11:hellohello1", "hellohello1"),
+            ("02:hi", "hi"),
+        ];
+
+        for (input, expected) in cases {
+            let actual = B::nom_str(input).unwrap().1;
+            assert_eq!(actual, expected)
+        }
+
+        let cases = vec![
+            // comment to prevent rustfmt from collapsing cases into a single line :/
+            "6:hello",
+            "a5:hallo",
+            "a",
+            "18446744073709551616:overflow",
+        ];
+
+        for input in cases {
+            assert!(B::nom_str(input).is_err());
+        }
+    }
+
+    #[test]
+    fn parse_nom_list() {
+        let cases = vec![
+            ("le", vec![]),
+            ("li4ei2e2:42e", vec![B::Num(4), B::Num(2), B::Str("42")]),
+            (
+                "l5:helloi42eli2ei3e2:hid4:listli1ei2ei3ee7:yahallo2::)eed2:hi5:hello3:inti15eee",
+                vec![
+                    B::Str("hello"),
+                    B::Num(42),
+                    B::List(vec![
+                        B::Num(2),
+                        B::Num(3),
+                        B::Str("hi"),
+                        B::Dict(hashmap! {
+                            "list"    => B::List(vec![B::Num(1), B::Num(2), B::Num(3)]),
+                            "yahallo" => B::Str(":)"),
+                        }),
+                    ]),
+                    B::Dict(hashmap! {
+                        "hi"  => B::Str("hello"),
+                        "int" => B::Num(15),
+                    }),
+                ],
+            ),
+        ];
+
+        for (input, expected) in cases {
+            let actual = B::nom_list(input).unwrap().1;
+            assert_eq!(actual, expected)
+        }
+    }
+
+    #[test]
+    fn parse_nom_dict() {
+        let cases = vec![
+            // comment to prevent rustfmt from collapsing cases into a single line :/
+            ("de", HashMap::new()),
+            (
+                "d3:onei1e3:twoi2ee",
+                hashmap! {
+                    "one" => B::Num(1),
+                    "two" => B::Num(2),
+                },
+            ),
+            (
+                concat!(
+                    "d8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
+                    "\"13:creation datei1234567890e9:httpseedsl31:http://direct.example.com/mock131:http",
+                    "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
+                    "iece lengthi536870912eee"),
+                hashmap! {
+                    "announce"      => B::Str("http://tracker.example.com:8080/announce"),
+                    "comment"       => B::Str("\"Hello mock data\""),
+                    "creation date" => B::Num(1234567890),
+                    "httpseeds"     => B::List(vec![
+                        B::Str("http://direct.example.com/mock1"),
+                        B::Str("http://direct.example.com/mock2"),
+                    ]),
+                    "info" => B::Dict(hashmap!(
+                        "length"       => B::Num(562949953421312),
+                        "name"         => B::Str("あいえおう"),
+                        "piece length" => B::Num(536870912),
+                    )),
+                }
+            ),
+        ];
+
+        for (input, expected) in cases {
+            let actual = B::nom_dict(input).unwrap().1;
+            assert_eq!(actual, expected)
+        }
+    }
+
+    #[test]
+    fn parse_nom_dict_fail() {
+        let cases = vec!["d2:hi5:hello1:ai32ee"];
+
+        for input in cases {
+            assert!(B::nom_dict(input).is_err());
+        }
+    }
+
+    #[test]
     fn parse_int() {
         let cases = vec![
             ("i42e", 42),
@@ -255,9 +480,9 @@ mod tests {
     fn parse_int_fail() {
         let cases = vec![
             "e",
-            "-0e",
-            "00e",
-            "05e",
+            "i-0e",
+            "i00e",
+            "i05e",
             "i18446744073709551615e",
             "i-0e",
             "i03e",
