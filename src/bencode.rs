@@ -1,12 +1,19 @@
 use crate::utils::IterExt;
-use nom::character::complete::{digit0, digit1};
-use nom::{
-    alt, char as nchar, delimited, length_data, many0, map, map_opt, map_res, named, one_of, opt,
-    recognize, tag, terminated, tuple,
-};
 use ring::digest;
 use std::collections::HashMap;
 use std::convert::TryInto;
+
+use nom::{
+    branch::alt,
+    bytes::complete::tag,
+    character::complete::{char as nchar, digit0, digit1, one_of},
+    combinator::{map, map_opt, map_res, opt, recognize},
+    multi::{length_data, many0},
+    sequence::{delimited, terminated, tuple},
+    IResult,
+};
+
+type Parsed<'a, T> = IResult<&'a str, T>;
 
 #[derive(Debug, PartialEq)]
 pub enum Bencode<'a> {
@@ -25,7 +32,7 @@ impl<'a> Bencode<'a> {
     }
 
     // compute a SHA-1 hash of an info dictionary from the input
-    pub fn info_hash(input: &'a str) -> Option<[u8; 20]> {
+    pub fn info_hash(input: &str) -> Option<[u8; 20]> {
         // compute sha1 hash of info dict, this hash includes the surrounding 'd' and 'e' tags
         //
         // let torrent file: &str = "d ... 4:infod ... e ... e";
@@ -33,26 +40,23 @@ impl<'a> Bencode<'a> {
         //
         // sha1.sum( torrent_file[start..=end] )
 
-        named!(
-            compute_info_hash(&str) -> Option<[u8; 20]>,
-            map!(
-                delimited!(
-                    tag!("d"),
-                    many0!(tuple!(Bencode::parse_str, Bencode::parse_benc_no_map)),
-                    tag!("e")
-                ),
-                |kv_pairs| {
-                    kv_pairs.iter().find(|(k, _)| *k == "info").map(|(_, v)| {
-                        digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, v.as_bytes())
-                            .as_ref()
-                            .try_into()
-                            .unwrap()
-                    })
-                }
-            )
-        );
-
-        compute_info_hash(input).ok()?.1
+        map(
+            delimited(
+                tag("d"),
+                many0(tuple((Bencode::parse_str, Bencode::parse_benc_no_map))),
+                tag("e"),
+            ),
+            |kv_pairs| {
+                kv_pairs.iter().find(|(k, _)| *k == "info").map(|(_, v)| {
+                    digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, v.as_bytes())
+                        .as_ref()
+                        .try_into()
+                        .unwrap()
+                })
+            },
+        )(input)
+        .ok()?
+        .1
     }
 
     pub fn str(self) -> Option<&'a str> {
@@ -91,109 +95,104 @@ impl<'a> Bencode<'a> {
 impl<'a> Bencode<'a> {
     // nom bencode parsers
 
-    named!(
-        parse_benc(&'a str) -> Bencode,
-        alt!(
-            map!(Self::parse_str, Bencode::Str)
-                | map!(Self::parse_int, Bencode::Num)
-                | map!(Self::parse_list, Bencode::List)
-                | map!(Self::parse_dict, Bencode::Dict)
-        )
-    );
+    fn parse_benc(input: &'a str) -> Parsed<Bencode> {
+        alt((
+            map(Self::parse_str, Bencode::Str),
+            map(Self::parse_int, Bencode::Num),
+            map(Self::parse_list, Bencode::List),
+            map(Self::parse_dict, Bencode::Dict),
+        ))(input)
+    }
 
-    named!(
-        // parse a valid bencoded string
-        // bencodded strings are a number followed by a colon (':') and then a string as long as
-        // the preceding number
-        //
-        // pseudo format: \d+:(.*)
-        parse_str(&'a str) -> &str,
-        length_data!(terminated!(
-            map_res!(digit1, |n: &str| n.parse::<usize>()),
-            nchar!(':')
-        ))
-    );
+    // parse a valid bencoded string
+    // bencodded strings are a number followed by a colon (':') and then a string as long as
+    // the preceding number
+    //
+    // pseudo format: \d+:(.*)
+    fn parse_str(input: &str) -> Parsed<&str> {
+        length_data(terminated(
+            map_res(digit1, |n: &str| n.parse::<usize>()),
+            nchar(':'),
+        ))(input)
+    }
 
-    named!(
-        // parse a valid bencoded int
-        // pseudo format: i(\d+)e
-        // invalid numbers:
-        //   - i-0e
-        //   - all encodings with a leading zero, eg. i-02e
-        //
-        // parsing rules:
-        //   - if a number starts with zero, no digits can follow it. the next tag must be "e"
-        //   - all valid, non-zero numbers must start with a non-zero digit and be
-        //     followed by zero or more digits. regex: (-?[1-9][0-9]+)
-        parse_int(&'a str) -> i64,
-        map_res!(
-            delimited!(
-                nchar!('i'),
-                alt!(
-                    tag!("0") | recognize!(tuple!(opt!(nchar!('-')), one_of!("123456789"), digit0))
-                ),
-                nchar!('e')
+    // parse a valid bencoded int
+    // pseudo format: i(\d+)e
+    // invalid numbers:
+    //   - i-0e
+    //   - all encodings with a leading zero, eg. i-02e
+    //
+    // parsing rules:
+    //   - if a number starts with zero, no digits can follow it. the next tag must be "e"
+    //   - all valid, non-zero numbers must start with a non-zero digit and be
+    //     followed by zero or more digits. regex: (-?[1-9][0-9]+)
+    fn parse_int(input: &str) -> Parsed<i64> {
+        map_res(
+            delimited(
+                nchar('i'),
+                alt((
+                    tag("0"),
+                    recognize(tuple((opt(nchar('-')), one_of("123456789"), digit0))),
+                )),
+                nchar('e'),
             ),
-            |num: &str| num.parse()
-        )
-    );
+            |num: &str| num.parse(),
+        )(input)
+    }
 
-    named!(
-        // parse a valid bencoded list
-        // pseudo format: l(Benc)*e
-        parse_list(&'a str) -> Vec<Bencode>,
-        delimited!(nchar!('l'), many0!(Self::parse_benc), nchar!('e'))
-    );
+    // parse a valid bencoded list
+    // pseudo format: l(Benc)*e
+    fn parse_list(input: &'a str) -> Parsed<Vec<Bencode>> {
+        delimited(nchar('l'), many0(Self::parse_benc), nchar('e'))(input)
+    }
 
-    named!(
-        // parse a valid bencoded dict
-        // dict keys must appear in sorted order
-        //
-        // pseudo format: d(Str Benc)*e
-        parse_dict(&'a str) -> HashMap<&str, Bencode>,
-        map_opt!(
-            delimited!(
-                nchar!('d'),
-                many0!(tuple!(Self::parse_str, Self::parse_benc)),
-                nchar!('e')
+    // parse a valid bencoded dict
+    // dict keys must appear in sorted order
+    //
+    // pseudo format: d(Str Benc)*e
+    fn parse_dict(input: &'a str) -> Parsed<HashMap<&str, Bencode>> {
+        map_opt(
+            delimited(
+                nchar('d'),
+                many0(tuple((Self::parse_str, Self::parse_benc))),
+                nchar('e'),
             ),
-            |kv_pairs: Vec<(&'a str, Bencode<'a>)>| {
+            |kv_pairs: Vec<(&str, Bencode)>| {
                 kv_pairs
                     .windows(2)
                     .all(|p| p[0].0 < p[1].0)
                     .then(|| kv_pairs.into_iter().collect())
-            }
-        )
-    );
+            },
+        )(input)
+    }
 
-    named!(
-        parse_benc_no_map(&'a str) -> &str,
+    fn parse_benc_no_map(input: &'a str) -> Parsed<&str> {
         // unfortunately we have to re-define all of the rules here :(
-        alt!(
-            Self::parse_str
-                // int
-                | recognize!(delimited!(
-                    nchar!('i'),
-                    alt!(
-                        tag!("0")
-                            | recognize!(tuple!(opt!(nchar!('-')), one_of!("123456789"), digit0))
-                    ),
-                    nchar!('e')
-                ))
-                // list
-                | recognize!(delimited!(
-                    nchar!('l'),
-                    many0!(Self::parse_benc_no_map),
-                    nchar!('e')
-                ))
-                // dict
-                | recognize!(delimited!(
-                    nchar!('d'),
-                    many0!(tuple!(Self::parse_str, Self::parse_benc_no_map)),
-                    nchar!('e')
-                ))
-        )
-    );
+        alt((
+            Self::parse_str,
+            // int
+            recognize(delimited(
+                nchar('i'),
+                alt((
+                    tag("0"),
+                    recognize(tuple((opt(nchar('-')), one_of("123456789"), digit0))),
+                )),
+                nchar('e'),
+            )),
+            // list
+            recognize(delimited(
+                nchar('l'),
+                many0(Self::parse_benc_no_map),
+                nchar('e'),
+            )),
+            // dict
+            recognize(delimited(
+                nchar('d'),
+                many0(tuple((Self::parse_str, Self::parse_benc_no_map))),
+                nchar('e'),
+            )),
+        ))(input)
+    }
 }
 
 #[cfg(test)]
