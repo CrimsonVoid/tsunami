@@ -141,33 +141,35 @@ impl<'a> Bencode<'a> {
     );
 
     named!(
-        nom_str(&str) -> &str,
-        length_data!(
-            terminated!(
+        // parse a valid bencoded string
+        // bencodded strings are a number followed by a colon (':') and then a string as long as
+        // the preceding number
+        //
+        // pseudo format: \d+:(.*)
+        nom_str(&'a str) -> &str,
+        length_data!(terminated!(
                 map_res!(digit1, |n: &str| n.parse::<usize>()),
                 nchar!(':')
-            )
-        )
+        ))
     );
 
     named!(
         // parse a valid bencoded int
-        //   pseudo format: i(\d+)e
-        //   invalid numbers:
-        //     - i-0e
-        //     - all encodings with a leading zero, eg. i-02e
+        // pseudo format: i(\d+)e
+        // invalid numbers:
+        //   - i-0e
+        //   - all encodings with a leading zero, eg. i-02e
         //
         // parsing rules:
         //   - if a number starts with zero, no digits can follow it. the next tag must be "e"
         //   - all valid, non-zero numbers must start with a non-zero digit and be
         //     followed by zero or more digits. regex: (-?[1-9][0-9]+)
-        nom_int(&str) -> i64,
+        nom_int(&'a str) -> i64,
         map_res!(
             delimited!(
                 nchar!('i'),
                 alt!(
-                    tag!("0") |
-                    recognize!(tuple!( opt!(nchar!('-')), one_of!("123456789"), digit0 ))
+                    tag!("0") | recognize!(tuple!(opt!(nchar!('-')), one_of!("123456789"), digit0))
                 ),
                 nchar!('e')
             ),
@@ -176,22 +178,29 @@ impl<'a> Bencode<'a> {
     );
 
     named!(
+        // parse a valid bencoded list
+        // pseudo format: l(Benc)*e
         nom_list(&'a str) -> Vec<Bencode>,
         delimited!(nchar!('l'), many0!(Self::nom_benc), nchar!('e'))
     );
 
     named!(
-        nom_dict(&'a str) -> HashMap<&'a str, Bencode>,
+        // parse a valid bencoded dict
+        // dict keys must appear in sorted order
+        //
+        // pseudo format: d(Str Benc)*e
+        nom_dict(&'a str) -> HashMap<&str, Bencode>,
         map_opt!(
             delimited!(
                 nchar!('d'),
                 many0!(tuple!(Self::nom_str, Self::nom_benc)),
                 nchar!('e')
             ),
-            |keys: Vec<(&'a str, Bencode<'a>)>| {
-                keys.windows(2)
-                    .all(|w| w[0].0 < w[1].0)
-                    .then(|| keys.into_iter().collect())
+            |kv_pairs: Vec<(&'a str, Bencode<'a>)>| {
+                kv_pairs
+                    .windows(2)
+                    .all(|p| p[0].0 < p[1].0)
+                    .then(|| kv_pairs.into_iter().collect())
             }
         )
     );
