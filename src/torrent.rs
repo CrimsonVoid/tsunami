@@ -96,6 +96,8 @@ impl TryFrom<FileAST<'_>> for File {
     }
 }
 
+// TorrentAST is a structural representation of a torrent file. fields map over almost identically,
+// with dict's being repersented as sub-structs
 #[derive(Debug, PartialEq)]
 struct TorrentAST<'a> {
     announce: &'a str,
@@ -132,9 +134,7 @@ struct FileAST<'a> {
 
 impl<'a> TorrentAST<'a> {
     fn decode(file: &'a str) -> Option<TorrentAST<'a>> {
-        let benc = Bencode::decode(file)?;
-
-        let mut torrent = benc.dict()?;
+        let mut torrent = Bencode::decode(file)?.dict()?;
         let mut info = torrent.remove("info")?.dict()?;
 
         Some(TorrentAST {

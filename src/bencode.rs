@@ -166,8 +166,9 @@ impl<'a> Bencode<'a> {
         )(input)
     }
 
+    // same as parse benc, but doesn't try to parse the resulting str's into Benc nodes
+    // unfortunately we have to re-define all of the rules here :(
     fn parse_benc_no_map(input: &'a str) -> Parsed<&str> {
-        // unfortunately we have to re-define all of the rules here :(
         alt((
             Self::parse_str,
             // int
