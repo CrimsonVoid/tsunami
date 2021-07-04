@@ -1,13 +1,12 @@
 use crate::utils::IterExt;
-use lalrpop_util::{lalrpop_mod, ParseError};
-use logos::{Lexer, Logos};
+use nom::character::complete::{digit0, digit1};
+use nom::{
+    alt, char as nchar, delimited, length_data, many0, map, map_opt, map_res, named, one_of, opt,
+    recognize, tag, terminated, tuple,
+};
 use ring::digest;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::num;
-
-type Spanned<Token, Loc, Error> = Result<(Loc, Token, Loc), Error>;
-type DecodeResult<'a> = Result<Bencode<'a>, ParseError<usize, Token<'a>, BencError>>;
 
 #[derive(Debug, PartialEq)]
 pub enum Bencode<'a> {
@@ -18,18 +17,42 @@ pub enum Bencode<'a> {
 }
 
 impl<'a> Bencode<'a> {
-    pub fn decode(input: &str) -> DecodeResult {
-        let parser = bencode_lexer::BencParser::new();
-        let lex = Token::lexer(input);
-
-        parser.parse(lex)
+    pub fn decode(input: &str) -> Option<Bencode> {
+        match Bencode::parse_benc(input) {
+            Ok(("", benc)) => Some(benc), // make sure we consumed the whole input
+            _ => None,
+        }
     }
 
-    pub fn decode_dict(list: Vec<(&'a str, Bencode<'a>)>) -> DecodeResult<'a> {
-        match list[..].windows(2).all(|w| w[0].0 < w[1].0) {
-            true => Ok(Bencode::Dict(list.into_iter().collect())),
-            false => BencError::DictKeysNotSorted.into(),
-        }
+    // compute a SHA-1 hash of an info dictionary from the input
+    pub fn info_hash(input: &'a str) -> Option<[u8; 20]> {
+        // compute sha1 hash of info dict, this hash includes the surrounding 'd' and 'e' tags
+        //
+        // let torrent file: &str = "d ... 4:infod ... e ... e";
+        // let (start, end) =           start -> [     ] <- end
+        //
+        // sha1.sum( torrent_file[start..=end] )
+
+        named!(
+            compute_info_hash(&str) -> Option<[u8; 20]>,
+            map!(
+                delimited!(
+                    tag!("d"),
+                    many0!(tuple!(Bencode::parse_str, Bencode::parse_benc_no_map)),
+                    tag!("e")
+                ),
+                |kv_pairs| {
+                    kv_pairs.iter().find(|(k, _)| *k == "info").map(|(_, v)| {
+                        digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, v.as_bytes())
+                            .as_ref()
+                            .try_into()
+                            .unwrap()
+                    })
+                }
+            )
+        );
+
+        compute_info_hash(input).ok()?.1
     }
 
     pub fn str(self) -> Option<&'a str> {
@@ -63,165 +86,119 @@ impl<'a> Bencode<'a> {
     pub fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
         self.list()?.into_iter().flat_map_all(op)
     }
+}
 
-    // compute a SHA-1 hash of an info dictionary found in torrent_file
-    pub fn info_hash(torrent_file: &'a str) -> Option<[u8; 20]> {
-        // torrent_file format:
-        // d ... 4:infod ... e ... e
-        //    start -> [     ] <- end
-        //
-        // sha1.sum( &torrent_file[start..=end] )
+impl<'a> Bencode<'a> {
+    // nom bencode parsers
 
-        let mut tokens = <Token as Logos>::lexer(torrent_file).spanned();
-
-        // torrent files are dictionaries
-        if !matches!(tokens.next()?, (Token::D, _)) {
-            return None;
-        }
-
-        let start = {
-            // nest_level tracks how deep we are in a record. every time we encounter the start of
-            // a bencode token (I, L, or D) we increment nest_level by one. likewise, when we
-            // find the end of a token (E) nest_level is decremented by one. this way we can track
-            // if we found a top-level "info" key.
-            let mut nest_level = 0;
-            let mut found = false;
-
-            while !found {
-                match tokens.next()?.0 {
-                    Token::Str("info") if nest_level == 0 => found = true,
-                    Token::I | Token::L | Token::D => nest_level += 1,
-                    Token::E => nest_level -= 1,
-                    Token::Error => return None,
-                    _ => {}
-                }
-            }
-
-            // found an "info" key, value should be a bencoded dict
-            match tokens.next()? {
-                (Token::D, range) => range.start,
-                _ => return None,
-            }
-        };
-
-        let end = {
-            // we are currently inside the info dict, and need to consume tokens until we get find
-            // the closing E token
-            let mut nest_level = 1;
-
-            while nest_level > 0 {
-                match tokens.next()?.0 {
-                    Token::I | Token::L | Token::D => nest_level += 1,
-                    Token::E => nest_level -= 1,
-                    Token::Error => return None,
-                    _ => {}
-                }
-            }
-
-            // we consumed the closing E tag and can't be sure what the next token will be, but
-            // there MUST be at least one more token since we are inside a dictionary
-            match tokens.next()? {
-                (_, range) => range.start,
-            }
-        };
-
-        digest::digest(
-            &digest::SHA1_FOR_LEGACY_USE_ONLY,
-            &torrent_file[start..end].as_bytes(),
+    named!(
+        parse_benc(&'a str) -> Bencode,
+        alt!(
+            map!(Self::parse_str, Bencode::Str)
+                | map!(Self::parse_int, Bencode::Num)
+                | map!(Self::parse_list, Bencode::List)
+                | map!(Self::parse_dict, Bencode::Dict)
         )
-        .as_ref()
-        .try_into()
-        .ok()
-    }
-}
+    );
 
-#[derive(Debug, PartialEq)]
-pub enum BencError {
-    NegativeZero,
-    DictKeysNotSorted,
-    ParseError,
-    ParseIntError(num::ParseIntError),
-}
+    named!(
+        // parse a valid bencoded string
+        // bencodded strings are a number followed by a colon (':') and then a string as long as
+        // the preceding number
+        //
+        // pseudo format: \d+:(.*)
+        parse_str(&'a str) -> &str,
+        length_data!(terminated!(
+            map_res!(digit1, |n: &str| n.parse::<usize>()),
+            nchar!(':')
+        ))
+    );
 
-impl<'a> From<BencError> for DecodeResult<'a> {
-    fn from(err: BencError) -> Self {
-        Err(ParseError::User { error: err })
-    }
-}
+    named!(
+        // parse a valid bencoded int
+        // pseudo format: i(\d+)e
+        // invalid numbers:
+        //   - i-0e
+        //   - all encodings with a leading zero, eg. i-02e
+        //
+        // parsing rules:
+        //   - if a number starts with zero, no digits can follow it. the next tag must be "e"
+        //   - all valid, non-zero numbers must start with a non-zero digit and be
+        //     followed by zero or more digits. regex: (-?[1-9][0-9]+)
+        parse_int(&'a str) -> i64,
+        map_res!(
+            delimited!(
+                nchar!('i'),
+                alt!(
+                    tag!("0") | recognize!(tuple!(opt!(nchar!('-')), one_of!("123456789"), digit0))
+                ),
+                nchar!('e')
+            ),
+            |num: &str| num.parse()
+        )
+    );
 
-lalrpop_mod!(pub bencode_lexer);
+    named!(
+        // parse a valid bencoded list
+        // pseudo format: l(Benc)*e
+        parse_list(&'a str) -> Vec<Bencode>,
+        delimited!(nchar!('l'), many0!(Self::parse_benc), nchar!('e'))
+    );
 
-#[derive(Debug, Clone, PartialEq, Logos)]
-pub enum Token<'a> {
-    #[token("i")]
-    I,
-    #[token("l")]
-    L,
-    #[token("d")]
-    D,
-    #[token("e")]
-    E,
+    named!(
+        // parse a valid bencoded dict
+        // dict keys must appear in sorted order
+        //
+        // pseudo format: d(Str Benc)*e
+        parse_dict(&'a str) -> HashMap<&str, Bencode>,
+        map_opt!(
+            delimited!(
+                nchar!('d'),
+                many0!(tuple!(Self::parse_str, Self::parse_benc)),
+                nchar!('e')
+            ),
+            |kv_pairs: Vec<(&'a str, Bencode<'a>)>| {
+                kv_pairs
+                    .windows(2)
+                    .all(|p| p[0].0 < p[1].0)
+                    .then(|| kv_pairs.into_iter().collect())
+            }
+        )
+    );
 
-    #[regex("-?[0-9]+", Token::lex_num)]
-    Num(i64),
-
-    #[regex("[0-9]+:", Token::lex_str)]
-    Str(&'a str),
-
-    #[error]
-    Error,
-}
-
-impl<'a> Token<'a> {
-    fn lexer(input: &str) -> impl Iterator<Item = Spanned<Token, usize, BencError>> {
-        <Token as Logos>::lexer(input)
-            .spanned()
-            .map(|(tok, span)| match tok {
-                Token::Error => Err(BencError::ParseError),
-                _ => Ok((span.start, tok, span.end)),
-            })
-    }
-
-    fn lex_str(lex: &mut Lexer<'a, Token<'a>>) -> Option<&'a str> {
-        let len = lex.slice().trim_end_matches(":").parse::<u32>().ok()? as usize; // limit string length to u32::MAX
-        let remainder = lex.remainder();
-
-        if remainder.len() >= len {
-            let str = &remainder[..len];
-            lex.bump(len);
-
-            Some(str)
-        } else {
-            None
-        }
-    }
-
-    fn lex_num(lex: &mut Lexer<'a, Token<'a>>) -> Option<i64> {
-        let num_str = lex.slice();
-
-        let num = if num_str.starts_with("-") {
-            &num_str[1..]
-        } else {
-            num_str
-        };
-
-        if num.starts_with("0") && num.len() > 1 {
-            // numbers cannot be prefixed with zeroes (i02e is invalid)
-            return None;
-        }
-
-        if num_str == "-0" {
-            // -0 is invalid
-            return None;
-        }
-
-        num_str.parse().ok()
-    }
+    named!(
+        parse_benc_no_map(&'a str) -> &str,
+        // unfortunately we have to re-define all of the rules here :(
+        alt!(
+            Self::parse_str
+                // int
+                | recognize!(delimited!(
+                    nchar!('i'),
+                    alt!(
+                        tag!("0")
+                            | recognize!(tuple!(opt!(nchar!('-')), one_of!("123456789"), digit0))
+                    ),
+                    nchar!('e')
+                ))
+                // list
+                | recognize!(delimited!(
+                    nchar!('l'),
+                    many0!(Self::parse_benc_no_map),
+                    nchar!('e')
+                ))
+                // dict
+                | recognize!(delimited!(
+                    nchar!('d'),
+                    many0!(tuple!(Self::parse_str, Self::parse_benc_no_map)),
+                    nchar!('e')
+                ))
+        )
+    );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bencode_lexer, Bencode as B, Token};
+    use super::Bencode as B;
     use std::collections::HashMap;
     use std::str::from_utf8_unchecked;
 
@@ -248,22 +225,27 @@ mod tests {
             ("i-9223372036854775808e", i64::MIN),
         ];
 
-        lex_tests_helper(cases, |n| B::Num(n));
+        for (input, expected) in cases {
+            let actual = B::parse_int(input).unwrap().1;
+            assert_eq!(actual, expected)
+        }
     }
 
     #[test]
     fn parse_int_fail() {
         let cases = vec![
             "e",
-            "-0e",
-            "00e",
-            "05e",
+            "i-0e",
+            "i00e",
+            "i05e",
             "i18446744073709551615e",
             "i-0e",
             "i03e",
         ];
 
-        lex_fail_tests_helper(cases);
+        for input in cases {
+            assert!(B::parse_int(input).is_err());
+        }
     }
 
     #[test]
@@ -278,7 +260,10 @@ mod tests {
             ("02:hi", "hi"),
         ];
 
-        lex_tests_helper(cases, |s| B::Str(s));
+        for (input, expected) in cases {
+            let actual = B::parse_str(input).unwrap().1;
+            assert_eq!(actual, expected)
+        }
     }
 
     #[test]
@@ -291,7 +276,9 @@ mod tests {
             "18446744073709551616:overflow",
         ];
 
-        lex_fail_tests_helper(cases);
+        for input in cases {
+            assert!(B::parse_str(input).is_err());
+        }
     }
 
     #[test]
@@ -321,7 +308,10 @@ mod tests {
             ),
         ];
 
-        lex_tests_helper(cases, |l| B::List(l));
+        for (input, expected) in cases {
+            let actual = B::parse_list(input).unwrap().1;
+            assert_eq!(actual, expected)
+        }
     }
 
     #[test]
@@ -359,14 +349,19 @@ mod tests {
             ),
         ];
 
-        lex_tests_helper(cases, |d| B::Dict(d));
+        for (input, expected) in cases {
+            let actual = B::parse_dict(input).unwrap().1;
+            assert_eq!(actual, expected)
+        }
     }
 
     #[test]
     fn parse_dict_fail() {
         let cases = vec!["d2:hi5:hello1:ai32ee"];
 
-        lex_fail_tests_helper(cases);
+        for input in cases {
+            assert!(B::parse_dict(input).is_err());
+        }
     }
 
     #[test]
@@ -418,30 +413,7 @@ mod tests {
 
         for (torrent, expected) in cases {
             let info_hash = B::info_hash(torrent).unwrap();
-
             assert_eq!(info_hash, expected);
-        }
-    }
-
-    fn lex_tests_helper<T>(cases: Vec<(&str, T)>, f: impl Fn(T) -> B<'static>) {
-        let parser = bencode_lexer::BencParser::new();
-
-        for (input, expected) in cases {
-            let lex = Token::lexer(input);
-            let res = parser.parse(lex);
-
-            assert_eq!(res, Ok(f(expected)));
-        }
-    }
-
-    fn lex_fail_tests_helper(cases: Vec<&str>) {
-        let parser = bencode_lexer::BencParser::new();
-
-        for input in cases {
-            let lex = Token::lexer(input);
-            let res = parser.parse(lex);
-
-            assert!(res.is_err());
         }
     }
 }
