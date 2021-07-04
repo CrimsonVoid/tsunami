@@ -66,7 +66,8 @@ impl Torrent {
                 },
                 files: Self::build_files(torrent.info)?,
             },
-            info_hash: Bencode::info_hash(torrent_file)?,
+            info_hash: [0; 20],
+            // info_hash: Bencode::info_hash(torrent_file)?,
         })
     }
 
@@ -132,7 +133,7 @@ struct FileAST<'a> {
 
 impl<'a> TorrentAST<'a> {
     fn decode(file: &'a str) -> Option<TorrentAST<'a>> {
-        let benc = Bencode::decode(file).ok()?;
+        let benc = Bencode::decode(file)?;
 
         let mut torrent = benc.dict()?;
         let mut info = torrent.remove("info")?.dict()?;
