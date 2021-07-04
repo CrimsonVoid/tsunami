@@ -16,7 +16,7 @@ pub enum Bencode<'a> {
 
 impl<'a> Bencode<'a> {
     pub fn decode(input: &str) -> Option<Bencode> {
-        match Bencode::nom_benc(input) {
+        match Bencode::parse_benc(input) {
             Ok(("", benc)) => Some(benc), // make sure we consumed the whole input
             _ => None,
         }
@@ -131,12 +131,12 @@ impl<'a> Bencode<'a> {
     // nom bencode parsers
 
     named!(
-        nom_benc(&'a str) -> Bencode,
+        parse_benc(&'a str) -> Bencode,
         alt!(
-            map!(Self::nom_str, Bencode::Str)
-                | map!(Self::nom_int, Bencode::Num)
-                | map!(Self::nom_list, Bencode::List)
-                | map!(Self::nom_dict, Bencode::Dict)
+            map!(Self::parse_str, Bencode::Str)
+                | map!(Self::parse_int, Bencode::Num)
+                | map!(Self::parse_list, Bencode::List)
+                | map!(Self::parse_dict, Bencode::Dict)
         )
     );
 
@@ -146,7 +146,7 @@ impl<'a> Bencode<'a> {
         // the preceding number
         //
         // pseudo format: \d+:(.*)
-        nom_str(&'a str) -> &str,
+        parse_str(&'a str) -> &str,
         length_data!(terminated!(
                 map_res!(digit1, |n: &str| n.parse::<usize>()),
                 nchar!(':')
@@ -164,7 +164,7 @@ impl<'a> Bencode<'a> {
         //   - if a number starts with zero, no digits can follow it. the next tag must be "e"
         //   - all valid, non-zero numbers must start with a non-zero digit and be
         //     followed by zero or more digits. regex: (-?[1-9][0-9]+)
-        nom_int(&'a str) -> i64,
+        parse_int(&'a str) -> i64,
         map_res!(
             delimited!(
                 nchar!('i'),
@@ -180,8 +180,8 @@ impl<'a> Bencode<'a> {
     named!(
         // parse a valid bencoded list
         // pseudo format: l(Benc)*e
-        nom_list(&'a str) -> Vec<Bencode>,
-        delimited!(nchar!('l'), many0!(Self::nom_benc), nchar!('e'))
+        parse_list(&'a str) -> Vec<Bencode>,
+        delimited!(nchar!('l'), many0!(Self::parse_benc), nchar!('e'))
     );
 
     named!(
@@ -189,11 +189,11 @@ impl<'a> Bencode<'a> {
         // dict keys must appear in sorted order
         //
         // pseudo format: d(Str Benc)*e
-        nom_dict(&'a str) -> HashMap<&str, Bencode>,
+        parse_dict(&'a str) -> HashMap<&str, Bencode>,
         map_opt!(
             delimited!(
                 nchar!('d'),
-                many0!(tuple!(Self::nom_str, Self::nom_benc)),
+                many0!(tuple!(Self::parse_str, Self::parse_benc)),
                 nchar!('e')
             ),
             |kv_pairs: Vec<(&'a str, Bencode<'a>)>| {
@@ -236,7 +236,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let actual = B::nom_int(input).unwrap().1;
+            let actual = B::parse_int(input).unwrap().1;
             assert_eq!(actual, expected)
         }
     }
@@ -254,7 +254,7 @@ mod tests {
         ];
 
         for input in cases {
-            assert!(B::nom_int(input).is_err());
+            assert!(B::parse_int(input).is_err());
         }
     }
 
@@ -271,7 +271,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let actual = B::nom_str(input).unwrap().1;
+            let actual = B::parse_str(input).unwrap().1;
             assert_eq!(actual, expected)
         }
     }
@@ -287,7 +287,7 @@ mod tests {
         ];
 
         for input in cases {
-            assert!(B::nom_str(input).is_err());
+            assert!(B::parse_str(input).is_err());
         }
     }
 
@@ -319,7 +319,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let actual = B::nom_list(input).unwrap().1;
+            let actual = B::parse_list(input).unwrap().1;
             assert_eq!(actual, expected)
         }
     }
@@ -360,7 +360,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let actual = B::nom_dict(input).unwrap().1;
+            let actual = B::parse_dict(input).unwrap().1;
             assert_eq!(actual, expected)
         }
     }
@@ -370,7 +370,7 @@ mod tests {
         let cases = vec!["d2:hi5:hello1:ai32ee"];
 
         for input in cases {
-            assert!(B::nom_dict(input).is_err());
+            assert!(B::parse_dict(input).is_err());
         }
     }
 
