@@ -4,7 +4,9 @@ use nom::{
     alt, char as nchar, delimited, length_data, many0, map, map_opt, map_res, named, one_of, opt,
     recognize, tag, terminated, tuple,
 };
+use ring::digest;
 use std::collections::HashMap;
+use std::convert::TryInto;
 
 #[derive(Debug, PartialEq)]
 pub enum Bencode<'a> {
@@ -20,6 +22,37 @@ impl<'a> Bencode<'a> {
             Ok(("", benc)) => Some(benc), // make sure we consumed the whole input
             _ => None,
         }
+    }
+
+    // compute a SHA-1 hash of an info dictionary from the input
+    pub fn info_hash(input: &'a str) -> Option<[u8; 20]> {
+        // compute sha1 hash of info dict, this hash includes the surrounding 'd' and 'e' tags
+        //
+        // let torrent file: &str = "d ... 4:infod ... e ... e";
+        // let (start, end) =           start -> [     ] <- end
+        //
+        // sha1.sum( torrent_file[start..=end] )
+
+        named!(
+            compute_info_hash(&str) -> Option<[u8; 20]>,
+            map!(
+                delimited!(
+                    tag!("d"),
+                    many0!(tuple!(Bencode::parse_str, Bencode::parse_benc_no_map)),
+                    tag!("e")
+                ),
+                |kv_pairs| {
+                    kv_pairs.iter().find(|(k, _)| *k == "info").map(|(_, v)| {
+                        digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, v.as_bytes())
+                            .as_ref()
+                            .try_into()
+                            .unwrap()
+                    })
+                }
+            )
+        );
+
+        compute_info_hash(input).ok()?.1
     }
 
     pub fn str(self) -> Option<&'a str> {
@@ -53,78 +86,6 @@ impl<'a> Bencode<'a> {
     pub fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
         self.list()?.into_iter().flat_map_all(op)
     }
-
-    /*
-    // compute a SHA-1 hash of an info dictionary found in torrent_file
-    pub fn info_hash(torrent_file: &'a str) -> Option<[u8; 20]> {
-        // torrent_file format:
-        // d ... 4:infod ... e ... e
-        //    start -> [     ] <- end
-        //
-        // sha1.sum( &torrent_file[start..=end] )
-
-        let mut tokens = <Token as Logos>::lexer(torrent_file).spanned();
-
-        // torrent files are dictionaries
-        if !matches!(tokens.next()?, (Token::D, _)) {
-            return None;
-        }
-
-        let start = {
-            // nest_level tracks how deep we are in a record. every time we encounter the start of
-            // a bencode token (I, L, or D) we increment nest_level by one. likewise, when we
-            // find the end of a token (E) nest_level is decremented by one. this way we can track
-            // if we found a top-level "info" key.
-            let mut nest_level = 0;
-            let mut found = false;
-
-            while !found {
-                match tokens.next()?.0 {
-                    Token::Str("info") if nest_level == 0 => found = true,
-                    Token::I | Token::L | Token::D => nest_level += 1,
-                    Token::E => nest_level -= 1,
-                    Token::Error => return None,
-                    _ => {}
-                }
-            }
-
-            // found an "info" key, value should be a bencoded dict
-            match tokens.next()? {
-                (Token::D, range) => range.start,
-                _ => return None,
-            }
-        };
-
-        let end = {
-            // we are currently inside the info dict, and need to consume tokens until we get find
-            // the closing E token
-            let mut nest_level = 1;
-
-            while nest_level > 0 {
-                match tokens.next()?.0 {
-                    Token::I | Token::L | Token::D => nest_level += 1,
-                    Token::E => nest_level -= 1,
-                    Token::Error => return None,
-                    _ => {}
-                }
-            }
-
-            // we consumed the closing E tag and can't be sure what the next token will be, but
-            // there MUST be at least one more token since we are inside a dictionary
-            match tokens.next()? {
-                (_, range) => range.start,
-            }
-        };
-
-        digest::digest(
-            &digest::SHA1_FOR_LEGACY_USE_ONLY,
-            &torrent_file[start..end].as_bytes(),
-        )
-        .as_ref()
-        .try_into()
-        .ok()
-    }
-    */
 }
 
 impl<'a> Bencode<'a> {
@@ -148,8 +109,8 @@ impl<'a> Bencode<'a> {
         // pseudo format: \d+:(.*)
         parse_str(&'a str) -> &str,
         length_data!(terminated!(
-                map_res!(digit1, |n: &str| n.parse::<usize>()),
-                nchar!(':')
+            map_res!(digit1, |n: &str| n.parse::<usize>()),
+            nchar!(':')
         ))
     );
 
@@ -202,6 +163,35 @@ impl<'a> Bencode<'a> {
                     .all(|p| p[0].0 < p[1].0)
                     .then(|| kv_pairs.into_iter().collect())
             }
+        )
+    );
+
+    named!(
+        parse_benc_no_map(&'a str) -> &str,
+        // unfortunately we have to re-define all of the rules here :(
+        alt!(
+            Self::parse_str
+                // int
+                | recognize!(delimited!(
+                    nchar!('i'),
+                    alt!(
+                        tag!("0")
+                            | recognize!(tuple!(opt!(nchar!('-')), one_of!("123456789"), digit0))
+                    ),
+                    nchar!('e')
+                ))
+                // list
+                | recognize!(delimited!(
+                    nchar!('l'),
+                    many0!(Self::parse_benc_no_map),
+                    nchar!('e')
+                ))
+                // dict
+                | recognize!(delimited!(
+                    nchar!('d'),
+                    many0!(tuple!(Self::parse_str, Self::parse_benc_no_map)),
+                    nchar!('e')
+                ))
         )
     );
 }
@@ -421,10 +411,9 @@ mod tests {
             ),
         ];
 
-        for (_torrent, _expected) in cases {
-            // let info_hash = B::info_hash(torrent).unwrap();
-
-            // assert_eq!(info_hash, expected);
+        for (torrent, expected) in cases {
+            let info_hash = B::info_hash(torrent).unwrap();
+            assert_eq!(info_hash, expected);
         }
     }
 }

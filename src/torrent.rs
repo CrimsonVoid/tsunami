@@ -66,8 +66,7 @@ impl Torrent {
                 },
                 files: Self::build_files(torrent.info)?,
             },
-            info_hash: [0; 20],
-            // info_hash: Bencode::info_hash(torrent_file)?,
+            info_hash: Bencode::info_hash(torrent_file)?,
         })
     }
 
