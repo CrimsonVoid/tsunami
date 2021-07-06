@@ -5,7 +5,7 @@ mod torrent;
 mod utils;
 
 pub async fn do_nothing() -> Option<()> {
-    let t = download::Tsunami::new("")?;
+    let t = download::Tsunami::new(b"")?;
     let _peers = t.tracker_handshake().await.ok()?;
 
     None
