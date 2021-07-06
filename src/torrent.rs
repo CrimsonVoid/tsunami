@@ -35,7 +35,7 @@ pub struct File {
 }
 
 impl Torrent {
-    pub fn decode(torrent_file: &str) -> Option<Torrent> {
+    pub fn decode(torrent_file: &[u8]) -> Option<Torrent> {
         let torrent = TorrentAST::decode(torrent_file)?;
 
         if torrent.info.pieces.len() % 20 != 0 {
@@ -138,7 +138,7 @@ struct FileAST<'a> {
 }
 
 impl<'a> TorrentAST<'a> {
-    fn decode(file: &'a str) -> Option<TorrentAST<'a>> {
+    fn decode(file: &'a [u8]) -> Option<TorrentAST<'a>> {
         let mut torrent = Bencode::decode(file)?.dict()?;
         let mut info = torrent.remove("info")?.dict()?;
 
@@ -153,7 +153,7 @@ impl<'a> TorrentAST<'a> {
             encoding: torrent.remove("encoding").and_then(Bencode::str),
             info: InfoAST {
                 piece_length: info.remove("piece length")?.num()?,
-                pieces: info.remove("pieces")?.str()?.as_bytes(),
+                pieces: info.remove("pieces")?.bstr()?,
                 private: info.remove("private").and_then(Bencode::num),
                 name: info.remove("name")?.str()?,
                 length: info.remove("length").and_then(Bencode::num),
@@ -185,19 +185,12 @@ impl<'a> FileAST<'a> {
 #[cfg(test)]
 mod tests {
     use super::Torrent;
-    use std::str::from_utf8_unchecked;
 
     #[test]
     fn decode_torrent() {
         let test_files = [
-            (
-                unsafe { from_utf8_unchecked(include_bytes!("test_data/mock_dir.torrent")) },
-                "mock",
-            ),
-            (
-                unsafe { from_utf8_unchecked(include_bytes!("test_data/mock_file.torrent")) },
-                "",
-            ),
+            (&include_bytes!("test_data/mock_dir.torrent")[..], "mock"),
+            (&include_bytes!("test_data/mock_file.torrent")[..], ""),
         ];
 
         for (file, dir_name) in &test_files[..] {

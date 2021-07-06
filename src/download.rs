@@ -6,7 +6,6 @@ use hyper::{body, Client};
 use nom::number::complete::be_u16;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::str::from_utf8_unchecked;
 
 pub struct Tsunami {
     torrent: Torrent,
@@ -19,7 +18,7 @@ pub struct Tsunami {
 }
 
 impl Tsunami {
-    pub fn new(torrent_file: &str) -> Option<Tsunami> {
+    pub fn new(torrent_file: &[u8]) -> Option<Tsunami> {
         let torrent = Torrent::decode(torrent_file)?;
         let file_length = torrent.info.files.iter().map(|f| f.length).sum();
 
@@ -36,11 +35,7 @@ impl Tsunami {
         let resp = Client::new().get(uri).await?;
 
         let body = body::to_bytes(resp).await?;
-        let tracker_resp = unsafe {
-            // TODO - this causes Bencode::decode to fail in nom
-            let body = from_utf8_unchecked(&body[..]);
-            Self::parse_tracker_resp(body)
-        };
+        let tracker_resp = Self::parse_tracker_resp(&body);
 
         tracker_resp
     }
@@ -81,8 +76,8 @@ impl Tsunami {
         )
     }
 
-    fn parse_tracker_resp(resp: &str) -> TResult<(u64, Vec<SocketAddrV4>)> {
-        let mut tracker = match Bencode::decode(&resp) {
+    fn parse_tracker_resp(resp: &[u8]) -> TResult<(u64, Vec<SocketAddrV4>)> {
+        let mut tracker = match Bencode::decode(resp) {
             Some(Bencode::Dict(d)) => d,
             _ => {
                 return Err(TError::InvalidTrackerResp {
@@ -152,11 +147,10 @@ impl Tsunami {
 #[cfg(test)]
 mod tests {
     use super::Tsunami;
-    use std::str::from_utf8_unchecked;
 
-    // #[tokio::test]
+    #[tokio::test]
     async fn decode_torrent() {
-        let data = unsafe { from_utf8_unchecked(include_bytes!("test_data/debian.torrent")) };
+        let data = include_bytes!("test_data/debian.torrent");
         let tsunami = Tsunami::new(data).unwrap();
         let resp = tsunami.tracker_handshake().await.unwrap();
 

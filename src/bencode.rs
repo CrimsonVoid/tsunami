@@ -3,6 +3,7 @@ use ring::digest;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::Debug;
+use std::str::from_utf8;
 
 use nom::{
     branch::alt,
@@ -14,26 +15,27 @@ use nom::{
     IResult,
 };
 
-type Parsed<'a, T> = IResult<&'a str, T>;
+type Parsed<'a, T> = IResult<&'a [u8], T>;
 
 #[derive(Debug, PartialEq)]
 pub enum Bencode<'a> {
     Num(i64),
     Str(&'a str),
+    BStr(&'a [u8]),
     List(Vec<Bencode<'a>>),
     Dict(HashMap<&'a str, Bencode<'a>>),
 }
 
 impl<'a> Bencode<'a> {
-    pub fn decode(input: &str) -> Option<Bencode> {
+    pub fn decode(input: &[u8]) -> Option<Bencode> {
         match Bencode::parse_benc(input) {
-            Ok(("", benc)) => Some(benc), // make sure we consumed the whole input
+            Ok((&[], benc)) => Some(benc), // make sure we consumed the whole input
             _ => None,
         }
     }
 
     // compute a SHA-1 hash of an info dictionary from the input
-    pub fn info_hash(input: &str) -> Option<[u8; 20]> {
+    pub fn info_hash(input: &[u8]) -> Option<[u8; 20]> {
         // compute sha1 hash of info dict, this hash includes the surrounding 'd' and 'e' tags
         //
         // let torrent file: &str = "d ... 4:infod ... e ... e";
@@ -48,12 +50,15 @@ impl<'a> Bencode<'a> {
                 tag("e"),
             ),
             |kv_pairs| {
-                kv_pairs.iter().find(|(k, _)| *k == "info").map(|(_, v)| {
-                    digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, v.as_bytes())
-                        .as_ref()
-                        .try_into()
-                        .unwrap()
-                })
+                kv_pairs
+                    .iter()
+                    .find(|(k, _)| *k == &b"info"[..])
+                    .map(|(_, v)| {
+                        digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, v)
+                            .as_ref()
+                            .try_into()
+                            .unwrap()
+                    })
             },
         )(input)
         .ok()?
@@ -63,6 +68,13 @@ impl<'a> Bencode<'a> {
     pub fn str(self) -> Option<&'a str> {
         match self {
             Bencode::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn bstr(self) -> Option<&'a [u8]> {
+        match self {
+            Bencode::BStr(s) => Some(s),
             _ => None,
         }
     }
@@ -96,13 +108,22 @@ impl<'a> Bencode<'a> {
 impl<'a> Bencode<'a> {
     // nom bencode parsers
 
-    fn parse_benc(input: &'a str) -> Parsed<Bencode> {
+    fn parse_benc(input: &'a [u8]) -> Parsed<Bencode> {
         alt((
-            map(Self::parse_str, Bencode::Str),
+            map(Self::parse_str, Bencode::wrap_str),
             map(Self::parse_int, Bencode::Num),
             map(Self::parse_list, Bencode::List),
             map(Self::parse_dict, Bencode::Dict),
         ))(input)
+    }
+
+    // tries to parse the byte slice into a valid utf8 str as a Bencode::Str variant, otherwise it
+    // keeps the bytes as Bencode::BStr
+    fn wrap_str(s: &[u8]) -> Bencode {
+        match std::str::from_utf8(s) {
+            Ok(s) => Bencode::Str(s),
+            Err(_) => Bencode::BStr(s),
+        }
     }
 
     // parse a valid bencoded string
@@ -110,9 +131,13 @@ impl<'a> Bencode<'a> {
     // the preceding number
     //
     // pseudo format: \d+:(.*)
-    fn parse_str(input: &str) -> Parsed<&str> {
+    fn parse_str(input: &[u8]) -> Parsed<&[u8]> {
         length_data(terminated(
-            map_res(digit1, |n: &str| n.parse::<usize>()),
+            map_opt(digit1, |n: &[u8]| {
+                std::str::from_utf8(n)
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+            }),
             nchar(':'),
         ))(input)
     }
@@ -127,8 +152,8 @@ impl<'a> Bencode<'a> {
     //   - if a number starts with zero, no digits can follow it. the next tag must be "e"
     //   - all valid, non-zero numbers must start with a non-zero digit and be
     //     followed by zero or more digits. regex: (-?[1-9][0-9]+)
-    fn parse_int(input: &str) -> Parsed<i64> {
-        map_res(
+    fn parse_int(input: &[u8]) -> Parsed<i64> {
+        map_opt(
             delimited(
                 nchar('i'),
                 alt((
@@ -137,13 +162,13 @@ impl<'a> Bencode<'a> {
                 )),
                 nchar('e'),
             ),
-            |num: &str| num.parse(),
+            |num: &[u8]| std::str::from_utf8(num).ok().and_then(|s| s.parse().ok()),
         )(input)
     }
 
     // parse a valid bencoded list
     // pseudo format: l(Benc)*e
-    fn parse_list(input: &'a str) -> Parsed<Vec<Bencode>> {
+    fn parse_list(input: &'a [u8]) -> Parsed<Vec<Bencode>> {
         delimited(nchar('l'), many0(Self::parse_benc), nchar('e'))(input)
     }
 
@@ -151,11 +176,14 @@ impl<'a> Bencode<'a> {
     // dict keys must appear in sorted order
     //
     // pseudo format: d(Str Benc)*e
-    fn parse_dict(input: &'a str) -> Parsed<HashMap<&str, Bencode>> {
+    fn parse_dict(input: &'a [u8]) -> Parsed<HashMap<&str, Bencode>> {
+        // dicts keys should be valid utf8
+        let parse_str = map_res(Self::parse_str, from_utf8);
+
         map_opt(
             delimited(
                 nchar('d'),
-                many0(tuple((Self::parse_str, Self::parse_benc))),
+                many0(tuple((parse_str, Self::parse_benc))),
                 nchar('e'),
             ),
             |kv_pairs: Vec<(&str, Bencode)>| {
@@ -169,7 +197,7 @@ impl<'a> Bencode<'a> {
 
     // same as parse benc, but doesn't try to parse the resulting str's into Benc nodes
     // unfortunately we have to re-define all of the rules here :(
-    fn parse_benc_no_map(input: &'a str) -> Parsed<&str> {
+    fn parse_benc_no_map(input: &'a [u8]) -> Parsed<&[u8]> {
         alt((
             Self::parse_str,
             // int
@@ -201,7 +229,6 @@ impl<'a> Bencode<'a> {
 mod tests {
     use super::Bencode as B;
     use std::collections::HashMap;
-    use std::str::from_utf8_unchecked;
 
     macro_rules! hashmap {
         ($($k:expr => $v:expr),*) => ({
@@ -227,7 +254,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let actual = B::parse_int(input).unwrap().1;
+            let actual = B::parse_int(input.as_bytes()).unwrap().1;
             assert_eq!(actual, expected)
         }
     }
@@ -245,7 +272,7 @@ mod tests {
         ];
 
         for input in cases {
-            assert!(B::parse_int(input).is_err());
+            assert!(B::parse_int(input.as_bytes()).is_err());
         }
     }
 
@@ -262,8 +289,8 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let actual = B::parse_str(input).unwrap().1;
-            assert_eq!(actual, expected)
+            let actual = B::parse_str(input.as_bytes()).unwrap().1;
+            assert_eq!(actual, expected.as_bytes())
         }
     }
 
@@ -278,7 +305,7 @@ mod tests {
         ];
 
         for input in cases {
-            assert!(B::parse_str(input).is_err());
+            assert!(B::parse_str(input.as_bytes()).is_err());
         }
     }
 
@@ -310,7 +337,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let actual = B::parse_list(input).unwrap().1;
+            let actual = B::parse_list(input.as_bytes()).unwrap().1;
             assert_eq!(actual, expected)
         }
     }
@@ -351,7 +378,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let actual = B::parse_dict(input).unwrap().1;
+            let actual = B::parse_dict(input.as_bytes()).unwrap().1;
             assert_eq!(actual, expected)
         }
     }
@@ -361,7 +388,7 @@ mod tests {
         let cases = vec!["d2:hi5:hello1:ai32ee"];
 
         for input in cases {
-            assert!(B::parse_dict(input).is_err());
+            assert!(B::parse_dict(input.as_bytes()).is_err());
         }
     }
 
@@ -384,7 +411,7 @@ mod tests {
                     "9:httpseedsl31:http://direct.example.com/mock131:http",
                     "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
                     "iece lengthi536870912eee"
-                ),
+                ).as_bytes(),
                 [
                     0x83, 0x55, 0x11, 0x80, 0x8c,
                     0xd6, 0x54, 0x2c, 0x1b, 0xc5,
@@ -393,7 +420,7 @@ mod tests {
                 ],
             ),
             (
-                unsafe { from_utf8_unchecked(include_bytes!("test_data/mock_dir.torrent")) },
+                include_bytes!("test_data/mock_dir.torrent"),
                 [
                     0x74, 0x53, 0x68, 0x65, 0xe7,
                     0x7a, 0xcc, 0x72, 0xf2, 0x98,
@@ -402,7 +429,7 @@ mod tests {
                 ],
             ),
             (
-                unsafe { from_utf8_unchecked(include_bytes!("test_data/mock_file.torrent")) },
+                include_bytes!("test_data/mock_file.torrent"),
                 [
                     0x0b, 0x05, 0xab, 0xa1, 0xf2,
                     0xa0, 0xb2, 0xe6, 0xdc, 0x92,
