@@ -1,8 +1,12 @@
 mod bencode;
+mod download;
+mod error;
 mod torrent;
 mod utils;
-mod download;
 
-pub fn do_nothing() -> Option<()> {
-    torrent::Torrent::decode("hello").map(|_| ())
+pub async fn do_nothing() -> Option<()> {
+    let t = download::Tsunami::new("")?;
+    let _peers = t.tracker_handshake().await.ok()?;
+
+    None
 }
