@@ -6,9 +6,14 @@ use std::vec;
 
 #[derive(Debug, PartialEq)]
 pub struct Torrent {
-    announce_list: Vec<Vec<String>>,
-    info: Info,
-    info_hash: [u8; 20],
+    // announce_list contains a group of one or more trackers followed by an
+    // optional list of backup groups. this will always contain at least one
+    // tracker (`announce_list[0][0]`)
+    //
+    // example: vec![ vec!["tracker1", "tr2"], vec!["backup1"] ]
+    pub announce_list: Vec<Vec<String>>,
+    pub info: Info,
+    pub info_hash: [u8; 20],
 }
 
 #[derive(Debug, PartialEq)]
@@ -18,14 +23,14 @@ pub struct Info {
     private: bool,
 
     dir_name: String, // "" == single file (files.len() == 1)
-    files: Vec<File>,
+    pub files: Vec<File>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct File {
     // looks like torrent files don't contain empty folders or files
     path: Vec<String>, // path.concat("/")
-    length: u64,
+    pub length: u64,
     md5sum: Option<String>,
 }
 
@@ -149,7 +154,7 @@ impl<'a> TorrentAST<'a> {
             info: InfoAST {
                 piece_length: info.remove("piece length")?.num()?,
                 pieces: info.remove("pieces")?.str()?.as_bytes(),
-                private: info.remove("private")?.num(),
+                private: info.remove("private").and_then(Bencode::num),
                 name: info.remove("name")?.str()?,
                 length: info.remove("length").and_then(Bencode::num),
                 md5sum: info.remove("md5sum").and_then(Bencode::str),

@@ -9,3 +9,6 @@ edition = "2018"
 [dependencies]
 nom = { version = "6.2.1", default-features = false, features=["alloc"] }
 ring = "0.16.20"
+hyper = { version = "0.14.9", default-features = false, features = ["client", "http1", "tcp", "stream"] }
+tokio = { version = "1.8.0", features = ["full"] }
+futures = "0.3.15"
