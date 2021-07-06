@@ -16,7 +16,7 @@ use nom::{
 
 type Parsed<'a, T> = IResult<&'a str, T>;
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Bencode<'a> {
     Num(i64),
     Str(&'a str),
@@ -194,31 +194,6 @@ impl<'a> Bencode<'a> {
                 nchar('e'),
             )),
         ))(input)
-    }
-}
-
-impl<'a> Debug for Bencode<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Bencode::Num(n) => f.debug_struct("Bencode").field("Num", n).finish(),
-            Bencode::Str(s) => {
-                let bs = s.as_bytes();
-
-                match std::str::from_utf8(bs).is_ok() {
-                    true => {
-                        let s = if s.len() > 512 { &s[..512] } else { s };
-
-                        f.debug_struct("Bencode").field("Str", &s).finish()
-                    }
-                    false => {
-                        let bytes = if bs.len() > 32 { &bs[..32] } else { bs };
-                        f.debug_struct("Bencode").field("ByteStr", &bytes).finish()
-                    }
-                }
-            }
-            Bencode::List(l) => f.debug_struct("Bencode").field("List", l).finish(),
-            Bencode::Dict(d) => f.debug_struct("Bencode").field("Dict", d).finish(),
-        }
     }
 }
 
