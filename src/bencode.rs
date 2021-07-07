@@ -2,7 +2,6 @@ use crate::utils::IterExt;
 use ring::digest;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::fmt::Debug;
 use std::str::from_utf8;
 
 use nom::{

@@ -2,8 +2,11 @@ use crate::bencode::Bencode;
 use crate::error::{TError, TResult};
 use crate::torrent::Torrent;
 use crate::utils::IterExt;
+use hyper::client::HttpConnector;
 use hyper::{body, Client};
 use nom::number::complete::be_u16;
+use rand::prelude::SliceRandom;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
@@ -13,37 +16,112 @@ pub struct Tsunami {
     peer_id: String,
     file_length: u64,
 
+    uploaded: u64,
+    downloaded: u64,
+
     // offsets to use when trying to get the next tracker from torrent.annouce_list
-    announce_offset: (usize, usize),
+    trackers_offset: Cell<(usize, usize)>,
+    // TODO - track interval
 }
 
 impl Tsunami {
     pub fn new(torrent_file: &[u8]) -> Option<Tsunami> {
-        let torrent = Torrent::decode(torrent_file)?;
+        let mut torrent = Torrent::decode(torrent_file)?;
+
         let file_length = torrent.info.files.iter().map(|f| f.length).sum();
+
+        // shuffle each group of trackers
+        let mut rng = rand::thread_rng();
+        torrent
+            .trackers_list
+            .iter_mut()
+            .for_each(|tl| tl.shuffle(&mut rng));
 
         Some(Tsunami {
             torrent,
-            peer_id: "-TS0001-hellotsunami"[..20].into(),
+            peer_id: "-TS0001-hellotsunami"[..20].into(), // TODO - randomize
             file_length,
-            announce_offset: (0, 0),
+            uploaded: 0,
+            downloaded: 0,
+            trackers_offset: Cell::new((0, 0)),
         })
     }
 
+    // pub async fn get_peers(&self) -> TResult<&[SocketAddrV4]> {
+    //     // should check for interval before requesting new peers from trackers
+    //     // return existing list of peers
+
+    //     todo!()
+    // }
+
     pub async fn tracker_handshake(&self) -> TResult<(u64, Vec<SocketAddrV4>)> {
-        let uri = self.tracker_url().parse()?;
-        let resp = Client::new().get(uri).await?;
+        let client = Client::new();
 
-        let body = body::to_bytes(resp).await?;
-        let tracker_resp = Self::parse_tracker_resp(&body);
+        // track our starting offsets so we know when we've looped around
+        let (start_outer, mut start_inner) = self.trackers_offset.get();
+        // track current position
+        let (mut outer, mut inner) = (start_outer, start_inner);
 
-        tracker_resp
+        let trackers = &self.torrent.trackers_list[..];
+
+        while {
+            while {
+                match self.get_tracker_resp(&client).await {
+                    Some(r) => return Ok(r),
+                    _ => {}
+                }
+
+                // increment inner by 1, looping back around if we reach past the end and
+                // update trackers_offset
+                inner += 1;
+                if inner >= trackers[outer].len() {
+                    inner = 0;
+                }
+                self.trackers_offset.replace((outer, inner));
+
+                inner != start_inner
+            } {}
+
+            // reset inner
+            start_inner = 0;
+            inner = 0;
+
+            // increment outer by 1, looping back around if we reach past the end and
+            // update trackers_offset
+            outer += 1;
+            if outer >= trackers.len() {
+                outer = 0;
+            }
+            self.trackers_offset.replace((outer, inner));
+
+            outer != start_outer
+        } {}
+
+        // we exhausted all available trackers, reset our position for the next time we try
+        self.trackers_offset.replace((0, 0));
+
+        Err(TError::NoTrackerAvailable)
+    }
+
+    async fn get_tracker_resp(
+        &self,
+        client: &Client<HttpConnector>,
+    ) -> Option<(u64, Vec<SocketAddrV4>)> {
+        // TODO - don't discard errors
+
+        let uri = self.tracker_url().parse().ok()?;
+
+        let resp = client.get(uri).await.ok()?;
+        let body = body::to_bytes(resp).await.ok()?;
+
+        Self::parse_tracker_resp(&body).ok()
     }
 
     fn tracker_url(&self) -> String {
         // we must have at least one tracker
         // TODO - shuffle and rotate trackers
-        let tracker = &self.torrent.announce_list[0][0];
+        let (i, j) = self.trackers_offset.get();
+        let tracker = &self.torrent.trackers_list[i][j];
 
         const UPPERHEX: &[u8; 16] = b"0123456789ABCDEF";
 
@@ -69,10 +147,10 @@ impl Tsunami {
             info_hash = info_hash,
             peer_id = self.peer_id,
             port = 6881,
-            downloaded = 0,
-            uploaded = 0,
+            downloaded = self.downloaded,
+            uploaded = self.uploaded,
             compact = 1,
-            left = self.file_length,
+            left = self.file_length, // TODO - need to compute later, not exactly file_length - downloaded
         )
     }
 
