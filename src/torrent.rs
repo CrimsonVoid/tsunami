@@ -11,7 +11,7 @@ pub struct Torrent {
     // tracker (`announce_list[0][0]`)
     //
     // example: vec![ vec!["tracker1", "tr2"], vec!["backup1"] ]
-    pub announce_list: Vec<Vec<String>>,
+    pub trackers_list: Vec<Vec<String>>,
     pub info: Info,
     pub info_hash: [u8; 20],
 }
@@ -58,7 +58,7 @@ impl Torrent {
         };
 
         Some(Torrent {
-            announce_list: announce_list,
+            trackers_list: announce_list,
 
             info: Info {
                 piece_length: torrent.info.piece_length.try_into().ok()?,
