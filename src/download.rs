@@ -6,7 +6,6 @@ use hyper::client::HttpConnector;
 use hyper::{body, Client};
 use nom::number::complete::be_u16;
 use rand::prelude::SliceRandom;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
@@ -18,9 +17,6 @@ pub struct Tsunami {
 
     uploaded: u64,
     downloaded: u64,
-
-    // offsets to use when trying to get the next tracker from torrent.annouce_list
-    trackers_offset: Cell<(usize, usize)>,
     // TODO - track interval
 }
 
@@ -43,62 +39,29 @@ impl Tsunami {
             file_length,
             uploaded: 0,
             downloaded: 0,
-            trackers_offset: Cell::new((0, 0)),
         })
     }
 
     // pub async fn get_peers(&self) -> TResult<&[SocketAddrV4]> {
     //     // should check for interval before requesting new peers from trackers
     //     // return existing list of peers
-
     //     todo!()
     // }
 
-    pub async fn tracker_handshake(&self) -> TResult<(u64, Vec<SocketAddrV4>)> {
+    pub async fn tracker_handshake(&mut self) -> TResult<(u64, Vec<SocketAddrV4>)> {
         let client = Client::new();
 
-        // track our starting offsets so we know when we've looped around
-        let (start_outer, mut start_inner) = self.trackers_offset.get();
-        // track current position
-        let (mut outer, mut inner) = (start_outer, start_inner);
+        for outer in 0..self.torrent.trackers_list.len() {
+            for inner in 0..self.torrent.trackers_list[outer].len() {
+                let resp =
+                    self.get_tracker_resp(&client, &self.torrent.trackers_list[outer][inner]);
 
-        let trackers = &self.torrent.trackers_list[..];
-
-        while {
-            while {
-                match self.get_tracker_resp(&client).await {
-                    Some(r) => return Ok(r),
-                    _ => {}
+                if let Some(r) = resp.await {
+                    self.torrent.trackers_list[outer][..=inner].rotate_right(1);
+                    return Ok(r);
                 }
-
-                // increment inner by 1, looping back around if we reach past the end and
-                // update trackers_offset
-                inner += 1;
-                if inner >= trackers[outer].len() {
-                    inner = 0;
-                }
-                self.trackers_offset.replace((outer, inner));
-
-                inner != start_inner
-            } {}
-
-            // reset inner
-            start_inner = 0;
-            inner = 0;
-
-            // increment outer by 1, looping back around if we reach past the end and
-            // update trackers_offset
-            outer += 1;
-            if outer >= trackers.len() {
-                outer = 0;
             }
-            self.trackers_offset.replace((outer, inner));
-
-            outer != start_outer
-        } {}
-
-        // we exhausted all available trackers, reset our position for the next time we try
-        self.trackers_offset.replace((0, 0));
+        }
 
         Err(TError::NoTrackerAvailable)
     }
@@ -106,10 +69,11 @@ impl Tsunami {
     async fn get_tracker_resp(
         &self,
         client: &Client<HttpConnector>,
+        tracker: &str,
     ) -> Option<(u64, Vec<SocketAddrV4>)> {
         // TODO - don't discard errors
 
-        let uri = self.tracker_url().parse().ok()?;
+        let uri = self.tracker_url(tracker).parse().ok()?;
 
         let resp = client.get(uri).await.ok()?;
         let body = body::to_bytes(resp).await.ok()?;
@@ -117,12 +81,7 @@ impl Tsunami {
         Self::parse_tracker_resp(&body).ok()
     }
 
-    fn tracker_url(&self) -> String {
-        // we must have at least one tracker
-        // TODO - shuffle and rotate trackers
-        let (i, j) = self.trackers_offset.get();
-        let tracker = &self.torrent.trackers_list[i][j];
-
+    fn tracker_url(&self, tracker: &str) -> String {
         const UPPERHEX: &[u8; 16] = b"0123456789ABCDEF";
 
         let mut info_hash = String::with_capacity(60);
@@ -229,7 +188,7 @@ mod tests {
     #[tokio::test]
     async fn decode_torrent() {
         let data = include_bytes!("test_data/debian.torrent");
-        let tsunami = Tsunami::new(data).unwrap();
+        let mut tsunami = Tsunami::new(data).unwrap();
         let resp = tsunami.tracker_handshake().await.unwrap();
 
         println!("{:?}", resp);
