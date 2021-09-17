@@ -7,10 +7,10 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nom = { version = "6.2.1", default-features = false, features=["alloc"] }
+nom = { version = "7.0.0", default-features = false, features = ["alloc"] }
 ring = "0.16.20"
-hyper = { version = "0.14.9", default-features = false, features = ["client", "http1", "tcp", "stream"] }
-tokio = { version = "1.8.0", features = ["full"] }
-futures = "0.3.15"
-thiserror = "1.0.26"
+hyper = { version = "0.14.12", default-features = false, features = ["client", "http1", "tcp", "stream"] }
+tokio = { version = "1.11.0", features = ["full"] }
+thiserror = "1.0.29"
 rand = "0.8.4"
+chrono = "0.4.19"

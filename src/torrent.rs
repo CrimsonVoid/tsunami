@@ -1,9 +1,11 @@
-use crate::bencode::Bencode;
-use crate::utils::IterExt;
-use std::collections::HashMap;
-use std::convert::{TryFrom, TryInto};
-use std::vec;
+use std::{
+    collections::HashMap,
+    convert::{TryFrom, TryInto},
+};
 
+use crate::{bencode::Bencode, utils::IterExt};
+
+/// Torrent keeps a torrents metadata in a more workable format
 #[derive(Debug, PartialEq)]
 pub struct Torrent {
     // announce_list contains a group of one or more trackers followed by an
@@ -101,7 +103,7 @@ impl TryFrom<FileAST<'_>> for File {
     }
 }
 
-// TorrentAST is a structural representation of a torrent file. fields map over almost identically,
+// TorrentAST is a structural representation of a torrent file; fields map over almost identically,
 // with dict's being repersented as sub-structs
 #[derive(Debug, PartialEq)]
 struct TorrentAST<'a> {
@@ -143,7 +145,7 @@ impl<'a> TorrentAST<'a> {
         let mut info = torrent.remove("info")?.dict()?;
 
         Some(TorrentAST {
-            announce: torrent.remove("announce").and_then(Bencode::str)?,
+            announce: torrent.remove("announce")?.str()?,
             announce_list: torrent
                 .remove("announce-list")
                 .and_then(|al| al.map_list(|l| l.map_list(Bencode::str))),
@@ -193,7 +195,7 @@ mod tests {
             (&include_bytes!("test_data/mock_file.torrent")[..], ""),
         ];
 
-        for (file, dir_name) in &test_files[..] {
+        for (file, dir_name) in test_files {
             let pieces: Vec<[u8; 20]> = vec![[
                 0, 72, 105, 249, 236, 50, 141, 28, 177, 230, 77, 80, 106, 67, 249, 35, 207, 173,
                 235, 151,

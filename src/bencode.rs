@@ -1,8 +1,4 @@
-use crate::utils::IterExt;
-use ring::digest;
-use std::collections::HashMap;
-use std::convert::TryInto;
-use std::str::from_utf8;
+use std::{collections::HashMap, convert::TryInto, str::from_utf8};
 
 use nom::{
     branch::alt,
@@ -13,10 +9,13 @@ use nom::{
     sequence::{delimited, terminated, tuple},
     IResult,
 };
+use ring::digest;
+
+use crate::utils::IterExt;
 
 type Parsed<'a, T> = IResult<&'a [u8], T>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Bencode<'a> {
     Num(i64),
     Str(&'a str),
@@ -26,6 +25,19 @@ pub enum Bencode<'a> {
 }
 
 impl<'a> Bencode<'a> {
+    /// decode a bencoded value consuming all of input in the process
+    ///
+    /// # Failures
+    /// This function fails if any of the input is left after producing a value
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # use tsunami::bencode::Bencode;
+    /// assert_eq!(Bencode::decode(b"i42e").unwrap(), Bencode::Num(42));
+    ///
+    /// // consumed an empty dict but there was input left
+    /// assert_eq!(Bencode::decode(b"dei0e"), None);
+    /// ```
     pub fn decode(input: &[u8]) -> Option<Bencode> {
         match Bencode::parse_benc(input) {
             Ok((&[], benc)) => Some(benc), // make sure we consumed the whole input
@@ -33,7 +45,21 @@ impl<'a> Bencode<'a> {
         }
     }
 
-    // compute a SHA-1 hash of an info dictionary from the input
+    /// compute a SHA-1 hash of an info dictionary in input
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # use tsunami::bencode::Bencode;
+    ///
+    /// let input = b"d4:infod5:helloi2eee";
+    /// let expected = Some([
+    ///       3, 245, 131,  59,  43,
+    ///     101,  84,   9, 152, 153,
+    ///     139,  69, 214, 205,  74,
+    ///     149, 138, 168,  35,  80, ]);
+    ///
+    /// assert_eq!(Bencode::info_hash(&input[..]), expected);
+    /// ```
     pub fn info_hash(input: &[u8]) -> Option<[u8; 20]> {
         // compute sha1 hash of info dict, this hash includes the surrounding 'd' and 'e' tags
         //
@@ -51,7 +77,7 @@ impl<'a> Bencode<'a> {
             |kv_pairs| {
                 kv_pairs
                     .iter()
-                    .find(|(k, _)| *k == &b"info"[..])
+                    .find(|(k, _)| **k == b"info"[..])
                     .map(|(_, v)| {
                         digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, v)
                             .as_ref()
@@ -64,6 +90,15 @@ impl<'a> Bencode<'a> {
         .1
     }
 
+    /// str unwraps a [`Bencode::Str`] variant
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # use tsunami::bencode::Bencode;
+    ///
+    /// assert_eq!(Bencode::Str("str").str(), Some("str"));
+    /// assert_eq!(Bencode::BStr(b"str").str(), None);
+    /// ```
     pub fn str(self) -> Option<&'a str> {
         match self {
             Bencode::Str(s) => Some(s),
@@ -71,6 +106,15 @@ impl<'a> Bencode<'a> {
         }
     }
 
+    /// bstr unwraps a [`Bencode::BStr`] variant
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # use tsunami::bencode::Bencode;
+    ///
+    /// assert_eq!(Bencode::BStr(b"str").bstr(), Some(&b"str"[..]));
+    /// assert_eq!(Bencode::Str("str").bstr(), None);
+    /// ```
     pub fn bstr(self) -> Option<&'a [u8]> {
         match self {
             Bencode::BStr(s) => Some(s),
@@ -78,6 +122,15 @@ impl<'a> Bencode<'a> {
         }
     }
 
+    /// num unwraps a [`Bencode::Num`] variant
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # use tsunami::bencode::Bencode;
+    ///
+    /// assert_eq!(Bencode::Num(32).num(), Some(32));
+    /// # assert_eq!(Bencode::Str("str").num(), None);
+    /// ```
     pub fn num(self) -> Option<i64> {
         match self {
             Bencode::Num(n) => Some(n),
@@ -85,6 +138,18 @@ impl<'a> Bencode<'a> {
         }
     }
 
+    /// list unwraps a [`Bencode::List`] variant
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # use tsunami::bencode::Bencode;
+    ///
+    /// let list = vec![Bencode::Num(1 << 42)];
+    /// let benc = Bencode::List(list.clone());
+    ///
+    /// assert_eq!(benc.list(), Some(list));
+    /// # assert_eq!(B::Str("str").list(), None);
+    /// ```
     pub fn list(self) -> Option<Vec<Bencode<'a>>> {
         match self {
             Bencode::List(v) => Some(v),
@@ -92,6 +157,21 @@ impl<'a> Bencode<'a> {
         }
     }
 
+    /// dict unwraps a [`Bencode::Dict`] variant
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # use std::collections::HashMap;
+    /// # use tsunami::bencode::Bencode;
+    ///
+    /// let mut dict = HashMap::new();
+    /// dict.insert("num", Bencode::Num(32));
+    ///
+    /// let benc = Bencode::Dict(dict.clone());
+    ///
+    /// assert_eq!(benc.dict(), Some(dict));
+    /// # assert_eq!(Bencode::Str("str").dict(), None);
+    /// ```
     pub fn dict(self) -> Option<HashMap<&'a str, Bencode<'a>>> {
         match self {
             Bencode::Dict(d) => Some(d),
@@ -99,6 +179,19 @@ impl<'a> Bencode<'a> {
         }
     }
 
+    /// map_list calls op with every element of a [`Bencode::List`], returning None if any call to
+    /// op returned None
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # use tsunami::bencode::Bencode as B;
+    ///
+    /// let list = vec![ B::Num(0), B::Num(1), B::Str("two") ];
+    /// let benc = B::List(list.clone());
+    ///
+    /// assert_eq!(benc.clone().map_list(|b| Some(b)), Some(list));
+    /// assert_eq!(benc.map_list(|b| b.num()), None);
+    /// ```
     pub fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
         self.list()?.into_iter().flat_map_all(op)
     }
@@ -116,8 +209,7 @@ impl<'a> Bencode<'a> {
         ))(input)
     }
 
-    // tries to parse the byte slice into a valid utf8 str as a Bencode::Str variant, otherwise it
-    // keeps the bytes as Bencode::BStr
+    /// wraps s as either Bencode::Str if s is a valid utf8 str or Bencode::BStr
     fn wrap_str(s: &[u8]) -> Bencode {
         match std::str::from_utf8(s) {
             Ok(s) => Bencode::Str(s),
@@ -125,32 +217,35 @@ impl<'a> Bencode<'a> {
         }
     }
 
-    // parse a valid bencoded string
-    // bencodded strings are a number followed by a colon (':') and then a string as long as
-    // the preceding number
-    //
-    // pseudo format: \d+:(.*)
+    /// parse a valid bencoded string
+    ///
+    /// a bencoded string is a base-ten length followed by a colon (:) and then the string
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # use tsunami::bencode::Bencode as B;
+    /// assert_eq!(B::parse_str(b"5:hello").unwrap().1, &b"hello"[..]);
+    /// ```
     fn parse_str(input: &[u8]) -> Parsed<&[u8]> {
         length_data(terminated(
             map_opt(digit1, |n: &[u8]| {
-                std::str::from_utf8(n)
-                    .ok()
-                    .and_then(|s| s.parse::<usize>().ok())
+                std::str::from_utf8(n).ok()?.parse::<usize>().ok()
             }),
             nchar(':'),
         ))(input)
     }
 
-    // parse a valid bencoded int
-    // pseudo format: i(\d+)e
-    // invalid numbers:
-    //   - i-0e
-    //   - all encodings with a leading zero, eg. i-02e
-    //
-    // parsing rules:
-    //   - if a number starts with zero, no digits can follow it. the next tag must be "e"
-    //   - all valid, non-zero numbers must start with a non-zero digit and be
-    //     followed by zero or more digits. regex: (-?[1-9][0-9]+)
+    /// parse a valid bencoded int
+    ///
+    /// pseudo format: i(\d+)e
+    /// invalid numbers:
+    ///   - i-0e
+    ///   - all encodings with a leading zero, eg. i-02e
+    ///
+    /// parsing rules:
+    ///   - if a number starts with zero, no digits can follow it. the next tag must be "e"
+    ///   - all valid, non-zero numbers must start with a non-zero digit and be
+    ///     followed by zero or more digits. regex: (-?[1-9][0-9]+)
     fn parse_int(input: &[u8]) -> Parsed<i64> {
         map_opt(
             delimited(
@@ -161,7 +256,7 @@ impl<'a> Bencode<'a> {
                 )),
                 nchar('e'),
             ),
-            |num: &[u8]| std::str::from_utf8(num).ok().and_then(|s| s.parse().ok()),
+            |num: &[u8]| std::str::from_utf8(num).ok()?.parse().ok(),
         )(input)
     }
 

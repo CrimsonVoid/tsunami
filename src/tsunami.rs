@@ -1,14 +1,22 @@
-use crate::bencode::Bencode;
-use crate::error::{TError, TResult};
-use crate::torrent::Torrent;
-use crate::utils::IterExt;
-use hyper::client::HttpConnector;
-use hyper::{body, Client};
-use nom::number::complete::be_u16;
-use rand::prelude::SliceRandom;
-use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+    net::{Ipv4Addr, SocketAddrV4},
+};
 
+use chrono::{DateTime, Duration, Utc};
+use hyper::{body, client::HttpConnector, Client};
+use nom::number::complete::be_u16;
+use rand::{distributions::Alphanumeric, prelude::SliceRandom, thread_rng, Rng};
+
+use crate::{
+    bencode::Bencode,
+    error::{TError, TResult},
+    torrent::Torrent,
+    utils::IterExt,
+};
+
+/// Tsunami bittorrent client
 pub struct Tsunami {
     torrent: Torrent,
 
@@ -17,7 +25,9 @@ pub struct Tsunami {
 
     uploaded: u64,
     downloaded: u64,
-    // TODO - track interval
+
+    tracker_interval: DateTime<Utc>,
+    peers: HashSet<SocketAddrV4>,
 }
 
 impl Tsunami {
@@ -33,55 +43,67 @@ impl Tsunami {
             .iter_mut()
             .for_each(|tl| tl.shuffle(&mut rng));
 
+        let peer_id = format!(
+            "-TS0001-{}",
+            thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(12)
+                .map(char::from)
+                .collect::<String>()
+        );
+
         Some(Tsunami {
             torrent,
-            peer_id: "-TS0001-hellotsunami"[..20].into(), // TODO - randomize
+            peer_id,
             file_length,
             uploaded: 0,
             downloaded: 0,
+            tracker_interval: Utc::now(),
+            peers: HashSet::new(),
         })
     }
 
-    // pub async fn get_peers(&self) -> TResult<&[SocketAddrV4]> {
-    //     // should check for interval before requesting new peers from trackers
-    //     // return existing list of peers
-    //     todo!()
-    // }
+    pub async fn get_peers(&mut self) -> TResult<&HashSet<SocketAddrV4>> {
+        if self.tracker_interval <= Utc::now() {
+            return Ok(&self.peers);
+        }
 
-    pub async fn tracker_handshake(&mut self) -> TResult<(u64, Vec<SocketAddrV4>)> {
         let client = Client::new();
+        let mut tracker_url = String::new();
 
+        // find the first available tracker we can reach, and move it the the front of its own list.
+        //
+        // for example, if b3 is the first tracker to respond:
+        //     [ [a1, a2], [b1, b2, b3], [c1] ]
+        //
+        // the new tracker list becomes:
+        //     [ [a1, a2], [b3, b1, b2], [c1] ]
+        //
+        // See BEP-12 for more details
         for outer in 0..self.torrent.trackers_list.len() {
             for inner in 0..self.torrent.trackers_list[outer].len() {
-                let resp =
-                    self.get_tracker_resp(&client, &self.torrent.trackers_list[outer][inner]);
+                let tracker = &self.torrent.trackers_list[outer][inner];
 
-                if let Some(r) = resp.await {
+                self.build_tracker_url(&mut tracker_url, &tracker);
+                let resp = Self::get_peers_from_tracker(&client, &tracker_url);
+
+                if let Some((interval, peers)) = resp.await {
                     self.torrent.trackers_list[outer][..=inner].rotate_right(1);
-                    return Ok(r);
+
+                    let interval = Duration::seconds(interval.clamp(0, i64::MAX as u64) as i64);
+                    self.tracker_interval = Utc::now() + interval;
+                    self.peers.extend(peers.into_iter());
+
+                    return Ok(&self.peers);
                 }
+                tracker_url.clear();
             }
         }
 
         Err(TError::NoTrackerAvailable)
     }
 
-    async fn get_tracker_resp(
-        &self,
-        client: &Client<HttpConnector>,
-        tracker: &str,
-    ) -> Option<(u64, Vec<SocketAddrV4>)> {
-        // TODO - don't discard errors
-
-        let uri = self.tracker_url(tracker).parse().ok()?;
-
-        let resp = client.get(uri).await.ok()?;
-        let body = body::to_bytes(resp).await.ok()?;
-
-        Self::parse_tracker_resp(&body).ok()
-    }
-
-    fn tracker_url(&self, tracker: &str) -> String {
+    fn build_tracker_url(&self, mut buffer: &mut String, tracker: &str) {
         const UPPERHEX: &[u8; 16] = b"0123456789ABCDEF";
 
         let mut info_hash = String::with_capacity(60);
@@ -91,7 +113,8 @@ impl Tsunami {
             info_hash.push(UPPERHEX[b as usize & 15] as char);
         }
 
-        format!(
+        let _ = write!(
+            &mut buffer,
             concat!(
                 "{}?",
                 "info_hash={info_hash}",
@@ -110,7 +133,20 @@ impl Tsunami {
             uploaded = self.uploaded,
             compact = 1,
             left = self.file_length, // TODO - need to compute later, not exactly file_length - downloaded
-        )
+        );
+    }
+
+    pub async fn get_peers_from_tracker(
+        client: &Client<HttpConnector>,
+        tracker: &str,
+    ) -> Option<(u64, Vec<SocketAddrV4>)> {
+        // TODO - don't discard errors
+        let uri = tracker.parse().ok()?;
+        let resp = client.get(uri).await.ok()?;
+        let body = body::to_bytes(resp).await.ok()?;
+
+        // TODO - avoid allocs?
+        Self::parse_tracker_resp(&body).ok()
     }
 
     fn parse_tracker_resp(resp: &[u8]) -> TResult<(u64, Vec<SocketAddrV4>)> {
@@ -131,7 +167,7 @@ impl Tsunami {
 
         // use a function here to simplify control flow since most parsing operations return
         // an Option
-        let t = |mut tracker: HashMap<&str, Bencode>| -> Option<_> {
+        let resp = |mut tracker: HashMap<&str, Bencode>| -> Option<_> {
             let interval = match tracker.remove("interval")?.num()? {
                 n if n < 0 => return None,
                 n => n as u64,
@@ -156,7 +192,7 @@ impl Tsunami {
 
                 // peers is a list of dicts each containing an "ip" and "port" key
                 // the spec defines "peer id" as well, but we do not need it rn and not really sure
-                // it exists for all responses
+                // if it exists for all responses
                 Bencode::List(peers) => peers.into_iter().flat_map_all(|peer| {
                     let mut peer = peer.dict()?;
 
@@ -172,7 +208,7 @@ impl Tsunami {
             Some((interval, sock_addrs))
         }(tracker);
 
-        match t {
+        match resp {
             Some(t) => Ok(t),
             None => Err(TError::InvalidTrackerResp {
                 failure_reason: None,
@@ -183,14 +219,14 @@ impl Tsunami {
 
 #[cfg(test)]
 mod tests {
-    // use super::Tsunami;
+    use super::Tsunami;
 
-    // #[tokio::test]
-    // async fn decode_torrent() {
-    //     let data = include_bytes!("test_data/debian.torrent");
-    //     let mut tsunami = Tsunami::new(data).unwrap();
-    //     let resp = tsunami.tracker_handshake().await.unwrap();
+    #[tokio::test]
+    async fn get_peers() {
+        let data = include_bytes!("test_data/debian.torrent");
+        let mut tsunami = Tsunami::new(data).unwrap();
+        let peers = tsunami.get_peers().await.unwrap();
 
-    //     println!("{:?}", resp);
-    // }
+        println!("{:?}", peers);
+    }
 }
