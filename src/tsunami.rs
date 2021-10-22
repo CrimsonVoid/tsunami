@@ -11,7 +11,7 @@ use rand::{distributions::Alphanumeric, prelude::SliceRandom, thread_rng, Rng};
 
 use crate::{
     bencode::Bencode,
-    error::{TError, TResult},
+    error::{Error, Result},
     torrent::Torrent,
     utils::IterExt,
 };
@@ -63,7 +63,7 @@ impl Tsunami {
         })
     }
 
-    pub async fn get_peers(&mut self) -> TResult<&HashSet<SocketAddrV4>> {
+    pub async fn get_peers(&mut self) -> Result<&HashSet<SocketAddrV4>> {
         if self.tracker_interval <= Utc::now() {
             return Ok(&self.peers);
         }
@@ -87,7 +87,7 @@ impl Tsunami {
                 self.build_tracker_url(&mut tracker_url, &tracker);
                 let resp = Self::get_peers_from_tracker(&client, &tracker_url);
 
-                if let Some((interval, peers)) = resp.await {
+                if let Ok((interval, peers)) = resp.await {
                     self.torrent.trackers_list[outer][..=inner].rotate_right(1);
 
                     let interval = Duration::seconds(interval.clamp(0, i64::MAX as u64) as i64);
@@ -100,7 +100,7 @@ impl Tsunami {
             }
         }
 
-        Err(TError::NoTrackerAvailable)
+        Err(Error::NoTrackerAvailable)
     }
 
     fn build_tracker_url(&self, mut buffer: &mut String, tracker: &str) {
@@ -139,32 +139,28 @@ impl Tsunami {
     pub async fn get_peers_from_tracker(
         client: &Client<HttpConnector>,
         tracker: &str,
-    ) -> Option<(u64, Vec<SocketAddrV4>)> {
-        // TODO - don't discard errors
-        let uri = tracker.parse().ok()?;
-        let resp = client.get(uri).await.ok()?;
-        let body = body::to_bytes(resp).await.ok()?;
+    ) -> Result<(u64, Vec<SocketAddrV4>)> {
+        let uri = tracker.parse()?;
+        let resp = client.get(uri).await?;
+        let resp = body::to_bytes(resp).await?;
 
-        // TODO - avoid allocs?
-        Self::parse_tracker_resp(&body).ok()
-    }
-
-    fn parse_tracker_resp(resp: &[u8]) -> TResult<(u64, Vec<SocketAddrV4>)> {
-        let mut tracker = match Bencode::decode(resp) {
+        let mut tracker = match Bencode::decode(&resp) {
             Some(Bencode::Dict(d)) => d,
             _ => {
-                return Err(TError::InvalidTrackerResp {
+                return Err(Error::InvalidTrackerResp {
                     failure_reason: None,
                 })
             }
         };
 
         if let Some(fail_msg) = tracker.remove("failure reason") {
+            // TODO - avoid allocs
             let failure_reason = fail_msg.str().map(|s| s.into());
 
-            return Err(TError::InvalidTrackerResp { failure_reason });
+            return Err(Error::InvalidTrackerResp { failure_reason });
         }
 
+        // parse response into a (interval, sockaddr's) pair
         // use a function here to simplify control flow since most parsing operations return
         // an Option
         let resp = |mut tracker: HashMap<&str, Bencode>| -> Option<_> {
@@ -208,12 +204,9 @@ impl Tsunami {
             Some((interval, sock_addrs))
         }(tracker);
 
-        match resp {
-            Some(t) => Ok(t),
-            None => Err(TError::InvalidTrackerResp {
-                failure_reason: None,
-            }),
-        }
+        resp.ok_or(Error::InvalidTrackerResp {
+            failure_reason: None,
+        })
     }
 }
 
