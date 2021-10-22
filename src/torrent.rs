@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    convert::{TryFrom, TryInto},
-};
+use std::collections::HashMap;
 
 use crate::{bencode::Bencode, utils::IterExt};
 

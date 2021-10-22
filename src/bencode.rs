@@ -1,4 +1,4 @@
-use std::{collections::HashMap, convert::TryInto, str::from_utf8};
+use std::{collections::HashMap, str::from_utf8};
 
 use nom::{
     branch::alt,

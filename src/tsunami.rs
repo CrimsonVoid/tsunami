@@ -7,7 +7,7 @@ use std::{
 use chrono::{DateTime, Duration, Utc};
 use hyper::{body, client::HttpConnector, Client};
 use nom::number::complete::be_u16;
-use rand::{distributions::Alphanumeric, prelude::SliceRandom, thread_rng, Rng};
+use rand::{distributions::Alphanumeric, prelude::SliceRandom, rngs::SmallRng, Rng, SeedableRng};
 
 use crate::{
     bencode::Bencode,
@@ -37,7 +37,7 @@ impl Tsunami {
         let file_length = torrent.info.files.iter().map(|f| f.length).sum();
 
         // shuffle each group of trackers
-        let mut rng = rand::thread_rng();
+        let mut rng = SmallRng::seed_from_u64(Utc::now().timestamp_millis() as u64);
         torrent
             .trackers_list
             .iter_mut()
@@ -45,8 +45,7 @@ impl Tsunami {
 
         let peer_id = format!(
             "-TS0001-{}",
-            thread_rng()
-                .sample_iter(&Alphanumeric)
+            rng.sample_iter(&Alphanumeric)
                 .take(12)
                 .map(char::from)
                 .collect::<String>()

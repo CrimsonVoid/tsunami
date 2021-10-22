@@ -2,15 +2,17 @@
 name = "tsunami"
 version = "0.1.0"
 authors = ["CrimsonVoid"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 nom = { version = "7.0.0", default-features = false, features = ["alloc"] }
-ring = "0.16.20"
-hyper = { version = "0.14.12", default-features = false, features = ["client", "http1", "tcp", "stream"] }
-tokio = { version = "1.11.0", features = ["full"] }
-thiserror = "1.0.29"
-rand = "0.8.4"
-chrono = "0.4.19"
+ring = { version = "0.16.20", default-features = false, features = [] }
+hyper = { version = "0.14.14", default-features = false, features = ["client", "http1", "tcp", "stream"] }
+rand = { version = "0.8.4", default-features = false, features = ["small_rng"] }
+chrono = { version = "0.4.19", default-features = false, features = ["clock"] }
+thiserror = "1.0.30"
+
+[dev-dependencies]
+tokio = { version = "1.12.0", default-features = false, features = ["rt", "macros"] }
