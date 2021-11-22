@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fmt::Write,
     net::{Ipv4Addr, SocketAddrV4},
 };
@@ -37,22 +37,21 @@ pub struct Tsunami {
 impl Tsunami {
     pub fn new(torrent_file: &[u8]) -> Option<Tsunami> {
         let mut torrent = Torrent::decode(torrent_file)?;
+        let mut rng = SmallRng::seed_from_u64(Utc::now().timestamp_millis() as u64);
 
         let file_length = torrent.info.files.iter().map(|f| f.length).sum();
 
         // shuffle each group of trackers
-        let mut rng = SmallRng::seed_from_u64(Utc::now().timestamp_millis() as u64);
-        torrent
-            .trackers_list
-            .iter_mut()
-            .for_each(|tl| tl.shuffle(&mut rng));
+        for tl in &mut torrent.trackers_list {
+            tl.shuffle(&mut rng);
+        }
 
         let peer_id = format!(
             "-TS0001-{}",
             rng.sample_iter(&Alphanumeric)
                 .take(12)
                 .map(char::from)
-                .collect::<String>()
+                .collect(): String
         );
 
         Some(Tsunami {
@@ -160,20 +159,19 @@ impl Tsunami {
         for outer in 0..self.torrent.trackers_list.len() {
             for inner in 0..self.torrent.trackers_list[outer].len() {
                 let tracker = &self.torrent.trackers_list[outer][inner];
-
                 self.build_tracker_url(&mut tracker_url, tracker);
-                let resp = Self::get_peers_from_tracker(&client, &tracker_url);
 
-                if let Ok((interval, peers)) = resp.await {
-                    self.torrent.trackers_list[outer][..=inner].rotate_right(1);
+                let Ok((interval, peers)) =  Self::get_peers_from_tracker(&client, &tracker_url).await else {
+                    tracker_url.clear();
+                    continue;
+                };
+                self.torrent.trackers_list[outer][..=inner].rotate_right(1);
 
-                    let interval = Duration::seconds(interval.clamp(0, i64::MAX as u64) as i64);
-                    self.tracker_interval = Utc::now() + interval;
-                    self.peers.extend(peers.into_iter());
+                let interval = Duration::seconds(interval.clamp(0, i64::MAX as u64) as i64);
+                self.tracker_interval = Utc::now() + interval;
+                self.peers.extend(peers.into_iter());
 
-                    return Ok(());
-                }
-                tracker_url.clear();
+                return Ok(());
             }
         }
 
@@ -221,13 +219,10 @@ impl Tsunami {
         let resp = client.get(uri).await?;
         let resp = body::to_bytes(resp).await?;
 
-        let mut tracker = match Bencode::decode(&resp) {
-            Some(Bencode::Dict(d)) => d,
-            _ => {
+        let Some(Bencode::Dict(mut tracker)) = Bencode::decode(&resp) else {
                 return Err(Error::InvalidTrackerResp {
                     failure_reason: None,
                 })
-            }
         };
 
         if let Some(fail_msg) = tracker.remove("failure reason") {
@@ -238,48 +233,48 @@ impl Tsunami {
         }
 
         // parse response into a (interval, sockaddr's) pair
-        // use a function here to simplify control flow since most parsing operations return
-        // an Option
-        let resp = |mut tracker: HashMap<&str, Bencode>| -> Option<_> {
-            let interval = match tracker.remove("interval")?.num()? {
-                n if n < 0 => return None,
-                n => n as u64,
-            };
+        let resp = 'resp2: {
+            try {
+                let interval = match tracker.remove("interval")?.num()? {
+                    n if n < 0 => break 'resp2 None,
+                    n => n as u64,
+                };
 
-            let sock_addrs = match tracker.remove("peers")? {
-                // peers is a list of IpPort pairs in big-ending order. the first four bytes
-                // represent the ip and the last two the port
-                // binary format: IIIIPP  (I = Ip, P = Port)
-                Bencode::BStr(peers) if peers.len() % 6 == 0 => {
-                    let mut sock_addrs = Vec::with_capacity(peers.len() / 6);
+                let sock_addrs = match tracker.remove("peers")? {
+                    // peers is a list of IpPort pairs in big-ending order. the first four bytes
+                    // represent the ip and the last two the port
+                    // binary format: IIIIPP  (I = Ip, P = Port)
+                    Bencode::BStr(peers) if peers.len() % 6 == 0 => {
+                        let mut sock_addrs = Vec::with_capacity(peers.len() / 6);
 
-                    for host in peers.chunks(6) {
-                        let ipv4 = Ipv4Addr::new(host[0], host[1], host[2], host[3]);
-                        let port = be_u16::<_, ()>(&host[4..]).ok()?.1;
+                        for host in peers.chunks(6) {
+                            let ipv4 = Ipv4Addr::new(host[0], host[1], host[2], host[3]);
+                            let port = be_u16::<_, ()>(&host[4..]).ok()?.1;
 
-                        sock_addrs.push(SocketAddrV4::new(ipv4, port));
+                            sock_addrs.push(SocketAddrV4::new(ipv4, port));
+                        }
+
+                        sock_addrs
                     }
 
-                    sock_addrs
-                }
+                    // peers is a list of dicts each containing an "ip" and "port" key
+                    // the spec defines "peer id" as well, but we do not need it rn and not really sure
+                    // if it exists for all responses
+                    Bencode::List(peers) => peers.into_iter().flat_map_all(|peer| {
+                        let mut peer = peer.dict()?;
 
-                // peers is a list of dicts each containing an "ip" and "port" key
-                // the spec defines "peer id" as well, but we do not need it rn and not really sure
-                // if it exists for all responses
-                Bencode::List(peers) => peers.into_iter().flat_map_all(|peer| {
-                    let mut peer = peer.dict()?;
+                        let ip = peer.remove("ip")?.str()?.parse().ok()?;
+                        let port = peer.remove("port")?.str()?.parse().ok()?;
 
-                    let ip = peer.remove("ip")?.str()?.parse().ok()?;
-                    let port = peer.remove("port")?.str()?.parse().ok()?;
+                        Some(SocketAddrV4::new(ip, port))
+                    })?,
 
-                    Some(SocketAddrV4::new(ip, port))
-                })?,
+                    _ => break 'resp2 None,
+                };
 
-                _ => return None,
-            };
-
-            Some((interval, sock_addrs))
-        }(tracker);
+                (interval, sock_addrs)
+            }
+        };
 
         resp.ok_or(Error::InvalidTrackerResp {
             failure_reason: None,
