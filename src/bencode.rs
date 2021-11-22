@@ -38,14 +38,14 @@ impl<'a> Bencode<'a> {
     /// // consumed an empty dict but there was input left
     /// assert_eq!(Bencode::decode(b"dei0e"), None);
     /// ```
-    pub fn decode(input: &[u8]) -> Option<Bencode> {
+    pub(crate) fn decode(input: &[u8]) -> Option<Bencode> {
         match Bencode::parse_benc(input) {
             Ok((&[], benc)) => Some(benc), // make sure we consumed the whole input
             _ => None,
         }
     }
 
-    /// compute a SHA-1 hash of an info dictionary in input
+    /// compute a SHA-1 hash of a dictionary in input
     ///
     /// # Examples
     /// ```ignore
@@ -58,13 +58,13 @@ impl<'a> Bencode<'a> {
     ///     139,  69, 214, 205,  74,
     ///     149, 138, 168,  35,  80, ]);
     ///
-    /// assert_eq!(Bencode::info_hash(&input[..]), expected);
+    /// assert_eq!(Bencode::dict_hash(&input[..], "info"), expected);
     /// ```
-    pub fn info_hash(input: &[u8]) -> Option<[u8; 20]> {
-        // compute sha1 hash of info dict, this hash includes the surrounding 'd' and 'e' tags
+    pub(crate) fn dict_hash(input: &[u8], key: &str) -> Option<[u8; 20]> {
+        // SHA-1 hash includes surrounding 'd' and 'e' tags
         //
-        // let torrent file: &str = "d ... 4:infod ... e ... e";
-        // let (start, end) =           start -> [     ] <- end
+        // let torrent file: = "d ... 4:infod ... e ... e";
+        // let (start, end)  =     start -> [     ] <- end
         //
         // sha1.sum( torrent_file[start..=end] )
 
@@ -77,7 +77,7 @@ impl<'a> Bencode<'a> {
             |kv_pairs| {
                 kv_pairs
                     .iter()
-                    .find(|(k, _)| **k == b"info"[..])
+                    .find(|(k, _)| *k == key.as_bytes())
                     .map(|(_, v)| {
                         digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, v)
                             .as_ref()
@@ -90,7 +90,7 @@ impl<'a> Bencode<'a> {
         .1
     }
 
-    /// str unwraps a [`Bencode::Str`] variant
+    /// str unwraps a [Bencode::Str] variant
     ///
     /// # Examples
     /// ```ignore
@@ -99,14 +99,14 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(Bencode::Str("str").str(), Some("str"));
     /// assert_eq!(Bencode::BStr(b"str").str(), None);
     /// ```
-    pub fn str(self) -> Option<&'a str> {
+    pub(crate) fn str(self) -> Option<&'a str> {
         match self {
             Bencode::Str(s) => Some(s),
             _ => None,
         }
     }
 
-    /// bstr unwraps a [`Bencode::BStr`] variant
+    /// bstr unwraps a [Bencode::BStr] variant
     ///
     /// # Examples
     /// ```ignore
@@ -115,14 +115,14 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(Bencode::BStr(b"str").bstr(), Some(&b"str"[..]));
     /// assert_eq!(Bencode::Str("str").bstr(), None);
     /// ```
-    pub fn bstr(self) -> Option<&'a [u8]> {
+    pub(crate) fn bstr(self) -> Option<&'a [u8]> {
         match self {
             Bencode::BStr(s) => Some(s),
             _ => None,
         }
     }
 
-    /// num unwraps a [`Bencode::Num`] variant
+    /// num unwraps a [Bencode::Num] variant
     ///
     /// # Examples
     /// ```ignore
@@ -131,14 +131,14 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(Bencode::Num(32).num(), Some(32));
     /// # assert_eq!(Bencode::Str("str").num(), None);
     /// ```
-    pub fn num(self) -> Option<i64> {
+    pub(crate) fn num(self) -> Option<i64> {
         match self {
             Bencode::Num(n) => Some(n),
             _ => None,
         }
     }
 
-    /// list unwraps a [`Bencode::List`] variant
+    /// list unwraps a [Bencode::List] variant
     ///
     /// # Examples
     /// ```ignore
@@ -150,14 +150,14 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(benc.list(), Some(list));
     /// # assert_eq!(B::Str("str").list(), None);
     /// ```
-    pub fn list(self) -> Option<Vec<Bencode<'a>>> {
+    pub(crate) fn list(self) -> Option<Vec<Bencode<'a>>> {
         match self {
             Bencode::List(v) => Some(v),
             _ => None,
         }
     }
 
-    /// dict unwraps a [`Bencode::Dict`] variant
+    /// dict unwraps a [Bencode::Dict] variant
     ///
     /// # Examples
     /// ```ignore
@@ -172,14 +172,14 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(benc.dict(), Some(dict));
     /// # assert_eq!(Bencode::Str("str").dict(), None);
     /// ```
-    pub fn dict(self) -> Option<HashMap<&'a str, Bencode<'a>>> {
+    pub(crate) fn dict(self) -> Option<HashMap<&'a str, Bencode<'a>>> {
         match self {
             Bencode::Dict(d) => Some(d),
             _ => None,
         }
     }
 
-    /// map_list calls op with every element of a [`Bencode::List`], returning None if any call to
+    /// map_list calls op with every element of a [Bencode::List], returning None if any call to
     /// op returned None
     ///
     /// # Examples
@@ -192,7 +192,7 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(benc.clone().map_list(|b| Some(b)), Some(list));
     /// assert_eq!(benc.map_list(|b| b.num()), None);
     /// ```
-    pub fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
+    pub(crate) fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
         self.list()?.into_iter().flat_map_all(op)
     }
 }
@@ -209,7 +209,7 @@ impl<'a> Bencode<'a> {
         ))(input)
     }
 
-    /// wraps s as either Bencode::Str if s is a valid utf8 str or Bencode::BStr
+    /// attemps to wrap s as either [Bencode::Str] if s is a valid utf8 string or [Bencode::BStr]
     fn wrap_str(s: &[u8]) -> Bencode {
         match std::str::from_utf8(s) {
             Ok(s) => Bencode::Str(s),
@@ -534,7 +534,7 @@ mod tests {
         ];
 
         for (torrent, expected) in cases {
-            let info_hash = B::info_hash(torrent).unwrap();
+            let info_hash = B::dict_hash(torrent, "info").unwrap();
             assert_eq!(info_hash, expected);
         }
     }

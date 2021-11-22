@@ -16,7 +16,7 @@ pub enum Error {
     InvalidTrackerUri(InvalidUri),
 
     #[error("hyper error")]
-    HyperError(hyper::Error),
+    Hyper(hyper::Error),
 }
 
 impl From<InvalidUri> for Error {
@@ -27,6 +27,6 @@ impl From<InvalidUri> for Error {
 
 impl From<hyper::Error> for Error {
     fn from(e: hyper::Error) -> Self {
-        Error::HyperError(e)
+        Error::Hyper(e)
     }
 }

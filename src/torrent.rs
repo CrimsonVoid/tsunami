@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ffi::OsStr, iter::once, path::PathBuf};
 
-use crate::{bencode::Bencode, utils::IterExt};
+use crate::bencode::Bencode;
 
 /// Torrent keeps a torrents metadata in a more workable format
 #[derive(Debug, PartialEq)]
@@ -21,16 +21,21 @@ pub struct Info {
     pieces: Vec<[u8; 20]>,
     private: bool,
 
-    dir_name: String, // "" == single file (files.len() == 1)
     pub files: Vec<File>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct File {
-    // looks like torrent files don't contain empty folders or files
-    path: Vec<String>, // path.concat("/")
+    // absolute location where file is saved. By default this is usually `OS_DOWNLOAD_DIR + base_path`
+    file: PathBuf,
+
+    // relative path as defined in the torrent file. this is may be sanitized for OS-specific
+    // character limitations or other blacklisted file names. since this is purely advisory, file
+    // may differ from base_path
+    // todo: do we need to keep base_path around if we already have file
+    base_path: PathBuf,
+
     pub length: u64,
-    md5sum: Option<String>,
 }
 
 impl Torrent {
@@ -49,9 +54,9 @@ impl Torrent {
             .collect();
 
         let announce_list = match torrent.announce_list {
-            Some(lss) => lss
-                .into_iter()
-                .map(|ls| ls.into_iter().map(|l| l.into()).collect())
+            Some(ref lss) => lss
+                .iter()
+                .map(|ls| ls.iter().map(|l| (*l).into()).collect())
                 .collect(),
             None => vec![vec![torrent.announce.into()]],
         };
@@ -61,57 +66,82 @@ impl Torrent {
 
             info: Info {
                 piece_length: torrent.info.piece_length.try_into().ok()?,
-                pieces: pieces,
+                pieces,
                 private: torrent.info.private == Some(1),
-                dir_name: if torrent.info.single_file() {
-                    "".into()
-                } else {
-                    torrent.info.name.into()
-                },
-                files: Self::build_files(torrent.info)?,
+                files: Self::build_files(&torrent.info)?,
             },
-            info_hash: Bencode::info_hash(torrent_file)?,
+            info_hash: Bencode::dict_hash(torrent_file, "info")?,
         })
     }
 
-    fn build_files(info: InfoAST) -> Option<Vec<File>> {
-        if info.single_file() {
-            // single file case
-            Some(vec![File {
-                path: vec![info.name.into()],
-                length: info.length? as u64,
-                md5sum: info.md5sum.map(|m| m.into()),
-            }])
-        } else {
-            info.files?.into_iter().flat_map_all(|f| f.try_into().ok())
+    fn build_files(info: &InfoAST) -> Option<Vec<File>> {
+        // for single file torrents this is `InfoAST.name`
+        // for  multi file torrents this is `InfoAST.name + FileAST.path.join("/")`
+
+        // todo: should we check for invalid paths? (incl os-specific blacklists) ?
+        // todo: name is advisory, can we just name it anything? should we change base_path if we
+        //       have an os_path member with the actual location on disk?
+        // todo: should we backtrack '..' up one dir?
+        let valid_path = |p: &str| p != "." && p != "..";
+
+        // fixme: move this to file_asts match block where it's used. have to define this here since
+        // "borrowed value does not live long enough"
+        let mut tmp = [FileAST {
+            path: Vec::with_capacity(1),
+            length: 0,
+        }];
+
+        let (base_dir, file_asts) = match (&info.length, &info.files) {
+            // todo: info.name could be "", making all files here top-level
+            (None, Some(ref files)) => (info.name, &files[..]),
+            (Some(len), None) => {
+                tmp[0].path.push(info.name);
+                tmp[0].length = *len;
+
+                ("", &tmp[..])
+            }
+            _ => return None,
+        };
+
+        let mut files = vec![];
+        for file in file_asts {
+            // file must be non-zero bytes
+            if file.length <= 0 {
+                return None;
+            }
+
+            let parts = file.path.iter().filter(|p| valid_path(p));
+            let base_path = PathBuf::from_iter(once(&base_dir).chain(parts));
+
+            // path was empty or all path segments were filtered out
+            if base_path == OsStr::new(base_dir) {
+                return None;
+            }
+
+            files.push(File {
+                // todo: file should be an absolute path
+                file: base_path.clone(),
+                base_path,
+                length: file.length as u64,
+            });
         }
-    }
-}
 
-impl TryFrom<FileAST<'_>> for File {
-    type Error = ();
-
-    fn try_from(rf: FileAST) -> Result<Self, Self::Error> {
-        Ok(File {
-            path: rf.path.into_iter().map(|p| p.into()).collect(),
-            length: rf.length.try_into().map_err(|_| ())?, // negative lengths are invalid
-            md5sum: rf.md5sum.map(|m| m.into()),
-        })
+        Some(files)
     }
 }
 
 // TorrentAST is a structural representation of a torrent file; fields map over almost identically,
-// with dict's being repersented as sub-structs
+// with dict's being represented as sub-structs
 #[derive(Debug, PartialEq)]
 struct TorrentAST<'a> {
     announce: &'a str,
     announce_list: Option<Vec<Vec<&'a str>>>,
+    info: InfoAST<'a>,
+
     comment: Option<&'a str>,
     created_by: Option<&'a str>,
     creation_date: Option<i64>,
     encoding: Option<&'a str>,
-
-    info: InfoAST<'a>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -121,11 +151,10 @@ struct InfoAST<'a> {
     private: Option<i64>,
     name: &'a str,
 
-    // single file
+    // length and files are mutually exclusive
+    // single file case
     length: Option<i64>,
-    md5sum: Option<&'a str>,
-
-    // multi-file
+    // multi-file case
     files: Option<Vec<FileAST<'a>>>,
 }
 
@@ -133,7 +162,6 @@ struct InfoAST<'a> {
 struct FileAST<'a> {
     path: Vec<&'a str>,
     length: i64,
-    md5sum: Option<&'a str>,
 }
 
 impl<'a> TorrentAST<'a> {
@@ -143,66 +171,84 @@ impl<'a> TorrentAST<'a> {
 
         Some(TorrentAST {
             announce: torrent.remove("announce")?.str()?,
+
             announce_list: torrent
                 .remove("announce-list")
                 .and_then(|al| al.map_list(|l| l.map_list(Bencode::str))),
-            comment: torrent.remove("comment").and_then(Bencode::str),
-            created_by: torrent.remove("created by").and_then(Bencode::str),
-            creation_date: torrent.remove("creation date").and_then(Bencode::num),
-            encoding: torrent.remove("encoding").and_then(Bencode::str),
+
             info: InfoAST {
                 piece_length: info.remove("piece length")?.num()?,
                 pieces: info.remove("pieces")?.bstr()?,
                 private: info.remove("private").and_then(Bencode::num),
                 name: info.remove("name")?.str()?,
                 length: info.remove("length").and_then(Bencode::num),
-                md5sum: info.remove("md5sum").and_then(Bencode::str),
                 files: info
                     .remove("files")
-                    .and_then(|f| f.map_list(|b| FileAST::decode(b.dict()?))),
+                    .and_then(|f| f.map_list(|b| Self::decode_file(b.dict()?))),
             },
+
+            comment: torrent.remove("comment").and_then(Bencode::str),
+            created_by: torrent.remove("created by").and_then(Bencode::str),
+            creation_date: torrent.remove("creation date").and_then(Bencode::num),
+            encoding: torrent.remove("encoding").and_then(Bencode::str),
         })
     }
-}
 
-impl InfoAST<'_> {
-    fn single_file(&self) -> bool {
-        self.length.is_some()
-    }
-}
-
-impl<'a> FileAST<'a> {
-    fn decode(mut file: HashMap<&'a str, Bencode<'a>>) -> Option<FileAST<'a>> {
+    fn decode_file(mut file: HashMap<&'a str, Bencode<'a>>) -> Option<FileAST<'a>> {
         Some(FileAST {
             path: file.remove("path")?.map_list(|p| p.str())?,
             length: file.remove("length")?.num()?,
-            md5sum: file.remove("md5sum").and_then(|s| s.str()),
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Torrent;
+    use std::{iter::once, path::PathBuf};
+
+    use crate::torrent::{File, Info, Torrent};
 
     #[test]
     fn decode_torrent() {
+        let tor_gen = |prefix: &str| Torrent {
+            trackers_list: vec![
+                vec!["http://tracker.example.com".into()],
+                vec!["http://tracker2.example.com".into()],
+            ],
+            info: Info {
+                piece_length: 32768,
+                pieces: vec![[
+                    0, 72, 105, 249, 236, 50, 141, 28, 177, 230, 77, 80, 106, 67, 249, 35, 207,
+                    173, 235, 151,
+                ]],
+                private: true,
+                files: vec![File {
+                    base_path: PathBuf::from_iter(once(prefix).chain(once("file.txt"))),
+                    file: PathBuf::from_iter(once(prefix).chain(once("file.txt"))),
+                    length: 10,
+                }],
+            },
+            info_hash: if prefix == "" {
+                [
+                    11, 5, 171, 161, 242, 160, 178, 230, 220, 146, 241, 219, 17, 67, 62, 95, 58,
+                    130, 11, 173,
+                ]
+            } else {
+                [
+                    116, 83, 104, 101, 231, 122, 204, 114, 242, 152, 196, 136, 195, 44, 49, 171,
+                    155, 150, 152, 177,
+                ]
+            },
+        };
+
         let test_files = [
             (&include_bytes!("test_data/mock_dir.torrent")[..], "mock"),
             (&include_bytes!("test_data/mock_file.torrent")[..], ""),
         ];
 
         for (file, dir_name) in test_files {
-            let pieces: Vec<[u8; 20]> = vec![[
-                0, 72, 105, 249, 236, 50, 141, 28, 177, 230, 77, 80, 106, 67, 249, 35, 207, 173,
-                235, 151,
-            ]];
-
             let torrent = Torrent::decode(file).unwrap();
-            println!("{:?}", torrent);
-
-            assert_eq!(torrent.info.dir_name, *dir_name);
-            assert_eq!(torrent.info.pieces, pieces);
+            assert_eq!(torrent, tor_gen(dir_name));
         }
     }
 }
