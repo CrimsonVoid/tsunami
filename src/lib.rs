@@ -11,4 +11,5 @@ mod error;
 mod torrent;
 mod utils;
 
+mod connection;
 pub mod tsunami;

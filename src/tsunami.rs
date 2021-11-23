@@ -1,5 +1,5 @@
+use std::collections::HashMap;
 use std::{
-    collections::HashSet,
     fmt::Write,
     net::{Ipv4Addr, SocketAddrV4},
 };
@@ -8,16 +8,13 @@ use chrono::{DateTime, Duration, Utc};
 use hyper::{body, client::HttpConnector, Client};
 use nom::number::complete::be_u16;
 use rand::{distributions::Alphanumeric, prelude::SliceRandom, rngs::SmallRng, Rng, SeedableRng};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
 
+use crate::connection::Connection;
 use crate::{
     bencode::Bencode,
     error::{Error, Result},
     torrent::Torrent,
-    utils::{IterExt, TcpStreamExt},
+    utils::IterExt,
 };
 
 /// Tsunami bittorrent client
@@ -31,7 +28,12 @@ pub struct Tsunami {
     downloaded: u64,
 
     tracker_interval: DateTime<Utc>,
-    peers: HashSet<SocketAddrV4>,
+    peers: HashMap<SocketAddrV4, ConnectionState>,
+}
+
+enum ConnectionState {
+    Known,
+    Connected(Connection),
 }
 
 impl Tsunami {
@@ -61,85 +63,25 @@ impl Tsunami {
             uploaded: 0,
             downloaded: 0,
             tracker_interval: Utc::now(),
-            peers: HashSet::new(),
+            peers: HashMap::new(),
         })
     }
 
     pub async fn download(&mut self) {
         self.fetch_peers().await.unwrap();
 
-        for sock in &self.peers {
-            let conn = tokio::net::TcpStream::connect(sock).await.unwrap();
-
-            conn.handshake().await.unwrap();
-            self.peer_handshake(conn).await.unwrap();
+        for (sock, _) in &self.peers {
+            let conn: Option<Connection> = try {
+                let s = tokio::net::TcpStream::connect(sock).await.ok()?;
+                Connection::handshake(s, &self.torrent.info_hash[..], &*self.peer_id.as_bytes())
+                    .await?
+            };
         }
 
         unimplemented!()
     }
 
-    async fn peer_handshake(&self, mut conn: TcpStream) -> Option<Connection> {
-        // Handshake layout:
-        // length | value
-        // -------+-------------------
-        //      1 | 19 (\x13)  =>  1
-        //     19 | Bittorrent Protocol
-        //      8 | extn flags \x00 * 8
-        //     20 | sha-1
-        //     20 | peer_id
-        //     -- | total
-        //     68
-        let (mut rx, mut tx) = conn.split();
-
-        // write our end of the handshake
-        let send = async {
-            let prefix = b"\x13Bittorrent Protocol\x00\x00\x00\x00\x00\x00\x00\x00";
-            tx.write_all(prefix).await?;
-            tx.write_all(&self.torrent.info_hash[..]).await?;
-            tx.write_all(self.peer_id.as_bytes()).await?;
-            Ok(())
-        };
-
-        // read a bittorrent greeting
-        let recv = async {
-            let err = Err(std::io::Error::from(std::io::ErrorKind::Other));
-            let mut buffer = vec![0; 20];
-
-            // protocol prefix
-            rx.read_exact(&mut buffer).await?;
-            if &buffer[..19] != b"\x13Bittorrent Protocol" {
-                return err;
-            }
-
-            // extension flags
-            rx.read_exact(&mut buffer[..8]).await?;
-            if !&buffer[..8].iter().all(|b| *b == 0) {
-                return err;
-            }
-
-            // info_hash
-            rx.read_exact(&mut buffer).await?;
-            if buffer != self.torrent.info_hash {
-                return err;
-            }
-
-            // peer id
-            buffer.fill(0);
-            rx.read_exact(&mut buffer[..]).await?;
-            String::from_utf8(buffer).or(err)
-        };
-
-        let (_, peer_id) = futures::try_join!(send, recv).ok()?;
-
-        Some(Connection {
-            choked: false,
-            interested: false,
-            conn,
-            peer_id,
-        })
-    }
-
-    async fn fetch_peers(&mut self) -> Result<()> {
+    pub(crate) async fn fetch_peers(&mut self) -> Result<()> {
         if self.tracker_interval <= Utc::now() && !self.peers.is_empty() {
             return Ok(());
         }
@@ -159,17 +101,26 @@ impl Tsunami {
         for outer in 0..self.torrent.trackers_list.len() {
             for inner in 0..self.torrent.trackers_list[outer].len() {
                 let tracker = &self.torrent.trackers_list[outer][inner];
-                self.build_tracker_url(&mut tracker_url, tracker);
 
+                // request peers from tracker
+                self.build_tracker_url(&mut tracker_url, tracker);
                 let Ok((interval, peers)) =  Self::get_peers_from_tracker(&client, &tracker_url).await else {
                     tracker_url.clear();
                     continue;
                 };
+
+                // make current tracker the first we try next time (in its local inner group, maintaining
+                // outer tracker group order)
                 self.torrent.trackers_list[outer][..=inner].rotate_right(1);
 
+                // set next tracker update interval
                 let interval = Duration::seconds(interval.clamp(0, i64::MAX as u64) as i64);
                 self.tracker_interval = Utc::now() + interval;
-                self.peers.extend(peers.into_iter());
+
+                // update our list of peers
+                for peer in peers {
+                    self.peers.entry(peer).or_insert(ConnectionState::Known);
+                }
 
                 return Ok(());
             }
@@ -280,14 +231,6 @@ impl Tsunami {
             failure_reason: None,
         })
     }
-}
-
-struct Connection {
-    choked: bool,
-    interested: bool,
-
-    conn: TcpStream,
-    peer_id: String,
 }
 
 #[cfg(test)]

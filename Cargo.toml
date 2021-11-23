@@ -13,9 +13,8 @@ hyper = { version = "0.14.15", default-features = false, features = ["client", "
 rand = { version = "0.8.4", default-features = false, features = ["small_rng"] }
 chrono = { version = "0.4.19", default-features = false, features = ["clock"] }
 thiserror = "1.0.30"
-async-trait = "0.1.51"
 tokio = { version = "1.14.0", default-features = false, features = ["net", "io-util"] }
-futures = { version = "0.3.17" }
+futures = { version = "0.3.17", default-features = false, features = ["async-await"] }
 
 [dev-dependencies]
 tokio = { version = "1.14.0", default-features = false, features = ["net", "rt", "macros", "full"] }

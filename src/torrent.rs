@@ -85,9 +85,9 @@ impl Torrent {
         let valid_path = |p: &str| p != "." && p != "..";
 
         // fixme: move this to file_asts match block where it's used. have to define this here since
-        // "borrowed value does not live long enough"
+        //       "borrowed value does not live long enough"
         let mut tmp = [FileAST {
-            path: Vec::with_capacity(1),
+            path: vec![info.name],
             length: 0,
         }];
 
@@ -95,7 +95,6 @@ impl Torrent {
             // todo: info.name could be "", making all files here top-level
             (None, Some(ref files)) => (info.name, &files[..]),
             (Some(len), None) => {
-                tmp[0].path.push(info.name);
                 tmp[0].length = *len;
 
                 ("", &tmp[..])
