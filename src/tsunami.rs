@@ -71,10 +71,15 @@ impl Tsunami {
         self.fetch_peers().await.unwrap();
 
         for (sock, _) in &self.peers {
-            let conn: Option<Connection> = try {
+            let _conn: Option<Connection> = try {
                 let s = tokio::net::TcpStream::connect(sock).await.ok()?;
-                Connection::handshake(s, &self.torrent.info_hash[..], &*self.peer_id.as_bytes())
-                    .await?
+                Connection::handshake(
+                    s,
+                    &self.torrent.info_hash[..],
+                    &*self.peer_id.as_bytes(),
+                    self.torrent.info.pieces.len(),
+                )
+                .await?
             };
         }
 

@@ -18,7 +18,7 @@ pub struct Torrent {
 #[derive(Debug, PartialEq)]
 pub struct Info {
     piece_length: u32,
-    pieces: Vec<[u8; 20]>,
+    pub pieces: Vec<[u8; 20]>,
     private: bool,
 
     pub files: Vec<File>,

@@ -15,6 +15,7 @@ chrono = { version = "0.4.19", default-features = false, features = ["clock"] }
 thiserror = "1.0.30"
 tokio = { version = "1.14.0", default-features = false, features = ["net", "io-util"] }
 futures = { version = "0.3.17", default-features = false, features = ["async-await"] }
+bitvec = "0.22.3"
 
 [dev-dependencies]
 tokio = { version = "1.14.0", default-features = false, features = ["net", "rt", "macros", "full"] }
