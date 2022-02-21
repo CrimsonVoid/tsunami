@@ -1,10 +1,11 @@
+use std::{io, result::Result as StdResult};
+
 use hyper::http::uri::InvalidUri;
-use std::result::Result as StdResult;
 use thiserror::Error;
 
-pub type Result<O> = StdResult<O, Error>;
+pub type Result<O, E = Error> = StdResult<O, E>;
 
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
     #[error("tracker sent an invalid response")]
     InvalidTrackerResp { failure_reason: Option<String> },
@@ -13,20 +14,17 @@ pub enum Error {
     NoTrackerAvailable,
 
     #[error("invalid tracker uri")]
-    InvalidTrackerUri(InvalidUri),
+    InvalidTrackerUri(#[from] InvalidUri),
 
     #[error("hyper error")]
-    Hyper(hyper::Error),
+    Hyper(#[from] hyper::Error),
 }
 
-impl From<InvalidUri> for Error {
-    fn from(e: InvalidUri) -> Self {
-        Error::InvalidTrackerUri(e)
-    }
-}
+#[derive(Debug, Error)]
+crate enum DecodeError {
+    #[error("io error")]
+    Io(#[from] io::Error),
 
-impl From<hyper::Error> for Error {
-    fn from(e: hyper::Error) -> Self {
-        Error::Hyper(e)
-    }
+    #[error("unknown message id {0} (len: {1})")]
+    MessageId(u8, u32),
 }

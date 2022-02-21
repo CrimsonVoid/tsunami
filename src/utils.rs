@@ -15,3 +15,12 @@ pub trait IterExt: Iterator {
 }
 
 impl<I: Iterator + Sized> IterExt for I {}
+
+crate mod num_ext {
+    pub const KB: usize = 1024;
+}
+
+crate const fn alloc_upto<T>(max_bytes: usize) -> usize {
+    let bytes = std::mem::size_of::<T>();
+    max_bytes / bytes
+}

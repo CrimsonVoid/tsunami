@@ -38,14 +38,14 @@ impl<'a> Bencode<'a> {
     /// // consumed an empty dict but there was input left
     /// assert_eq!(Bencode::decode(b"dei0e"), None);
     /// ```
-    pub(crate) fn decode(input: &[u8]) -> Option<Bencode> {
+    crate fn decode(input: &[u8]) -> Option<Bencode> {
         match Bencode::parse_benc(input) {
             Ok((&[], benc)) => Some(benc), // make sure we consumed the whole input
             _ => None,
         }
     }
 
-    /// compute a SHA-1 hash of a dictionary in input
+    /// compute the SHA-1 hash of a dictionary in input
     ///
     /// # Examples
     /// ```ignore
@@ -60,7 +60,7 @@ impl<'a> Bencode<'a> {
     ///
     /// assert_eq!(Bencode::dict_hash(&input[..], "info"), expected);
     /// ```
-    pub(crate) fn dict_hash(input: &[u8], key: &str) -> Option<[u8; 20]> {
+    crate fn dict_hash(input: &[u8], key: &str) -> Option<[u8; 20]> {
         // SHA-1 hash includes surrounding 'd' and 'e' tags
         //
         // let torrent file: = "d ... 4:infod ... e ... e";
@@ -99,7 +99,7 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(Bencode::Str("str").str(), Some("str"));
     /// assert_eq!(Bencode::BStr(b"str").str(), None);
     /// ```
-    pub(crate) fn str(self) -> Option<&'a str> {
+    crate fn str(self) -> Option<&'a str> {
         match self {
             Bencode::Str(s) => Some(s),
             _ => None,
@@ -115,7 +115,7 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(Bencode::BStr(b"str").bstr(), Some(&b"str"[..]));
     /// assert_eq!(Bencode::Str("str").bstr(), None);
     /// ```
-    pub(crate) fn bstr(self) -> Option<&'a [u8]> {
+    crate fn bstr(self) -> Option<&'a [u8]> {
         match self {
             Bencode::BStr(s) => Some(s),
             _ => None,
@@ -131,7 +131,7 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(Bencode::Num(32).num(), Some(32));
     /// # assert_eq!(Bencode::Str("str").num(), None);
     /// ```
-    pub(crate) fn num(self) -> Option<i64> {
+    crate fn num(self) -> Option<i64> {
         match self {
             Bencode::Num(n) => Some(n),
             _ => None,
@@ -150,7 +150,7 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(benc.list(), Some(list));
     /// # assert_eq!(B::Str("str").list(), None);
     /// ```
-    pub(crate) fn list(self) -> Option<Vec<Bencode<'a>>> {
+    crate fn list(self) -> Option<Vec<Bencode<'a>>> {
         match self {
             Bencode::List(v) => Some(v),
             _ => None,
@@ -172,7 +172,7 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(benc.dict(), Some(dict));
     /// # assert_eq!(Bencode::Str("str").dict(), None);
     /// ```
-    pub(crate) fn dict(self) -> Option<HashMap<&'a str, Bencode<'a>>> {
+    crate fn dict(self) -> Option<HashMap<&'a str, Bencode<'a>>> {
         match self {
             Bencode::Dict(d) => Some(d),
             _ => None,
@@ -192,12 +192,12 @@ impl<'a> Bencode<'a> {
     /// assert_eq!(benc.clone().map_list(|b| Some(b)), Some(list));
     /// assert_eq!(benc.map_list(|b| b.num()), None);
     /// ```
-    pub(crate) fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
+    crate fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
         self.list()?.into_iter().flat_map_all(op)
     }
 }
 
-impl<'a> Bencode<'a> {
+impl Bencode<'a> {
     // nom bencode parsers
 
     fn parse_benc(input: &'a [u8]) -> Parsed<Bencode> {
@@ -209,7 +209,7 @@ impl<'a> Bencode<'a> {
         ))(input)
     }
 
-    /// attemps to wrap s as either [Bencode::Str] if s is a valid utf8 string or [Bencode::BStr]
+    /// attempts to wrap s as either [Bencode::Str] if s is a valid utf8 string or [Bencode::BStr]
     fn wrap_str(s: &[u8]) -> Bencode {
         match std::str::from_utf8(s) {
             Ok(s) => Bencode::Str(s),
@@ -240,7 +240,7 @@ impl<'a> Bencode<'a> {
     /// pseudo format: i(\d+)e
     /// invalid numbers:
     ///   - i-0e
-    ///   - all encodings with a leading zero, eg. i-02e
+    ///   - all encodings with a leading zero, eg. i02e
     ///
     /// parsing rules:
     ///   - if a number starts with zero, no digits can follow it. the next tag must be "e"
@@ -321,8 +321,9 @@ impl<'a> Bencode<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::Bencode as B;
     use std::collections::HashMap;
+
+    use super::Bencode as B;
 
     macro_rules! hashmap {
         ($($k:expr => $v:expr),*) => ({

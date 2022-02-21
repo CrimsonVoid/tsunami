@@ -26,13 +26,14 @@ pub struct Info {
 
 #[derive(Debug, PartialEq)]
 pub struct File {
-    // absolute location where file is saved. By default this is usually `OS_DOWNLOAD_DIR + base_path`
+    // absolute location where file is saved. this defaults to base_path, but may be sanitized for
+    // OS-specific character limitations or other malformed file names
+    // default: OS_DOWNLOAD_DIR | HOME + base_path
     file: PathBuf,
 
-    // relative path as defined in the torrent file. this is may be sanitized for OS-specific
-    // character limitations or other blacklisted file names. since this is purely advisory, file
-    // may differ from base_path
-    // todo: do we need to keep base_path around if we already have file
+    // relative path as defined in the torrent file. since this is purely advisory, file may differ
+    // from base_path.
+    // todo: do we need to keep base_path around if we have file
     base_path: PathBuf,
 
     pub length: u64,
@@ -104,7 +105,6 @@ impl Torrent {
 
         let mut files = vec![];
         for file in file_asts {
-            // file must be non-zero bytes
             if file.length <= 0 {
                 return None;
             }
@@ -171,25 +171,28 @@ impl<'a> TorrentAST<'a> {
         Some(TorrentAST {
             announce: torrent.remove("announce")?.str()?,
 
-            announce_list: torrent
-                .remove("announce-list")
-                .and_then(|al| al.map_list(|l| l.map_list(Bencode::str))),
+            announce_list: try {
+                torrent
+                    .remove("announce-list")?
+                    .map_list(|l| l.map_list(Bencode::str))?
+            },
 
             info: InfoAST {
                 piece_length: info.remove("piece length")?.num()?,
                 pieces: info.remove("pieces")?.bstr()?,
-                private: info.remove("private").and_then(Bencode::num),
+                private: try { info.remove("private")?.num()? },
                 name: info.remove("name")?.str()?,
-                length: info.remove("length").and_then(Bencode::num),
-                files: info
-                    .remove("files")
-                    .and_then(|f| f.map_list(|b| Self::decode_file(b.dict()?))),
+                length: try { info.remove("length")?.num()? },
+                files: try {
+                    info.remove("files")?
+                        .map_list(|b| Self::decode_file(b.dict()?))?
+                },
             },
 
-            comment: torrent.remove("comment").and_then(Bencode::str),
-            created_by: torrent.remove("created by").and_then(Bencode::str),
-            creation_date: torrent.remove("creation date").and_then(Bencode::num),
-            encoding: torrent.remove("encoding").and_then(Bencode::str),
+            comment: try { torrent.remove("comment")?.str()? },
+            created_by: try { torrent.remove("created by")?.str()? },
+            creation_date: try { torrent.remove("creation date")?.num()? },
+            encoding: try { torrent.remove("encoding")?.str()? },
         })
     }
 

@@ -1,18 +1,18 @@
-use std::collections::HashMap;
 use std::{
+    collections::HashMap,
     fmt::Write,
     net::{Ipv4Addr, SocketAddrV4},
 };
 
+use byteorder::{ByteOrder, BE};
 use chrono::{DateTime, Duration, Utc};
 use hyper::{body, client::HttpConnector, Client};
-use nom::number::complete::be_u16;
-use rand::{distributions::Alphanumeric, prelude::SliceRandom, rngs::SmallRng, Rng, SeedableRng};
+use rand::{distributions::Alphanumeric, rngs::SmallRng, seq::SliceRandom, Rng, SeedableRng};
 
-use crate::connection::Connection;
 use crate::{
     bencode::Bencode,
     error::{Error, Result},
+    peer::Peer,
     torrent::Torrent,
     utils::IterExt,
 };
@@ -33,7 +33,7 @@ pub struct Tsunami {
 
 enum ConnectionState {
     Known,
-    Connected(Connection),
+    Connected(Peer),
 }
 
 impl Tsunami {
@@ -67,26 +67,26 @@ impl Tsunami {
         })
     }
 
-    pub async fn download(&mut self) {
-        self.fetch_peers().await.unwrap();
+    // pub async fn download(&mut self) {
+    //     self.fetch_peers().await.expect("fetch peers");
+    //
+    //     for (sock, _) in &self.peers {
+    //         let _conn: Option<Peer> = try {
+    //             let s = tokio::net::TcpStream::connect(sock).await.ok()?;
+    //             Peer::handshake(
+    //                 s,
+    //                 &self.torrent.info_hash,
+    //                 &*self.peer_id.as_bytes(),
+    //                 self.torrent.info.pieces.len(),
+    //             )
+    //             .await?
+    //         };
+    //     }
+    //
+    //     unimplemented!()
+    // }
 
-        for (sock, _) in &self.peers {
-            let _conn: Option<Connection> = try {
-                let s = tokio::net::TcpStream::connect(sock).await.ok()?;
-                Connection::handshake(
-                    s,
-                    &self.torrent.info_hash[..],
-                    &*self.peer_id.as_bytes(),
-                    self.torrent.info.pieces.len(),
-                )
-                .await?
-            };
-        }
-
-        unimplemented!()
-    }
-
-    pub(crate) async fn fetch_peers(&mut self) -> Result<()> {
+    crate async fn fetch_peers(&mut self) -> Result<()> {
         if self.tracker_interval <= Utc::now() && !self.peers.is_empty() {
             return Ok(());
         }
@@ -189,23 +189,21 @@ impl Tsunami {
         }
 
         // parse response into a (interval, sockaddr's) pair
-        let resp = 'resp2: {
+        let resp = 'resp: {
             try {
                 let interval = match tracker.remove("interval")?.num()? {
-                    n if n < 0 => break 'resp2 None,
+                    n if n < 0 => break 'resp None,
                     n => n as u64,
                 };
 
                 let sock_addrs = match tracker.remove("peers")? {
-                    // peers is a list of IpPort pairs in big-ending order. the first four bytes
-                    // represent the ip and the last two the port
-                    // binary format: IIIIPP  (I = Ip, P = Port)
+                    // list of (ip, port) pairs in BE order, format: IIIIPP  (I = Ip, P = Port)
                     Bencode::BStr(peers) if peers.len() % 6 == 0 => {
                         let mut sock_addrs = Vec::with_capacity(peers.len() / 6);
 
                         for host in peers.chunks(6) {
                             let ipv4 = Ipv4Addr::new(host[0], host[1], host[2], host[3]);
-                            let port = be_u16::<_, ()>(&host[4..]).ok()?.1;
+                            let port = BE::read_u16(&host[4..]);
 
                             sock_addrs.push(SocketAddrV4::new(ipv4, port));
                         }
@@ -213,10 +211,10 @@ impl Tsunami {
                         sock_addrs
                     }
 
-                    // peers is a list of dicts each containing an "ip" and "port" key
-                    // the spec defines "peer id" as well, but we do not need it rn and not really sure
-                    // if it exists for all responses
+                    // list of {"ip", "port"} dicts
                     Bencode::List(peers) => peers.into_iter().flat_map_all(|peer| {
+                        // todo: the spec defines "peer id" as well, but we do not need it rn and
+                        //       not really sure if it exists for all responses
                         let mut peer = peer.dict()?;
 
                         let ip = peer.remove("ip")?.str()?.parse().ok()?;
@@ -225,7 +223,7 @@ impl Tsunami {
                         Some(SocketAddrV4::new(ip, port))
                     })?,
 
-                    _ => break 'resp2 None,
+                    _ => break 'resp None,
                 };
 
                 (interval, sock_addrs)
