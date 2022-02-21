@@ -230,8 +230,10 @@ crate enum Message {
 mod test {
     use std::mem::size_of_val;
 
-    use tokio::io::BufStream;
-    use tokio::net::{TcpListener, TcpStream};
+    use tokio::{
+        io::BufStream,
+        net::{TcpListener, TcpStream},
+    };
 
     use crate::peer::{Peer, Status};
 
