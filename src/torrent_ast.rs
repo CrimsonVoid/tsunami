@@ -11,9 +11,68 @@ use nom::{
 };
 use ring::digest;
 
-use crate::utils::IterExt;
+// TorrentAST is a structural representation of a torrent file; fields map over almost identically,
+// with dict's being represented as sub-structs
+#[derive(Debug, PartialEq)]
+crate struct TorrentAST<'a> {
+    crate announce: &'a str,
+    crate announce_list: Option<Vec<Vec<&'a str>>>,
+    crate info: InfoAST<'a>,
+}
 
-type Parsed<'a, T> = IResult<&'a [u8], T>;
+#[derive(Debug, PartialEq)]
+crate struct InfoAST<'a> {
+    crate piece_length: i64,
+    crate pieces: &'a [u8],
+    crate private: Option<i64>,
+    crate name: &'a str,
+
+    // length and files are mutually exclusive
+    // single file case
+    crate length: Option<i64>,
+    // multi-file case
+    crate files: Option<Vec<FileAST<'a>>>,
+}
+
+#[derive(Debug, PartialEq)]
+crate struct FileAST<'a> {
+    crate path: Vec<&'a str>,
+    crate length: i64,
+}
+
+impl<'a> TorrentAST<'a> {
+    crate fn decode(file: &'a [u8]) -> Option<TorrentAST<'a>> {
+        let mut torrent = Bencode::decode(file)?.dict()?;
+        let mut info = torrent.remove("info")?.dict()?;
+
+        Some(TorrentAST {
+            announce: torrent.remove("announce")?.str()?,
+            announce_list: try {
+                torrent
+                    .remove("announce-list")?
+                    .map_list(|l| l.map_list(Bencode::str))?
+            },
+            info: InfoAST {
+                name: info.remove("name")?.str()?,
+                pieces: info.remove("pieces")?.bstr()?,
+                piece_length: info.remove("piece length")?.num()?,
+
+                length: try { info.remove("length")?.num()? },
+                files: try { info.remove("files")?.map_list(Self::parse_file)? },
+                private: try { info.remove("private")?.num()? },
+            },
+        })
+    }
+
+    fn parse_file(benc: Bencode<'a>) -> Option<FileAST<'a>> {
+        let mut file = benc.dict()?;
+
+        Some(FileAST {
+            path: file.remove("path")?.map_list(|p| p.str())?,
+            length: file.remove("length")?.num()?,
+        })
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Bencode<'a> {
@@ -32,11 +91,11 @@ impl<'a> Bencode<'a> {
     ///
     /// # Examples
     /// ```ignore
-    /// # use tsunami::bencode::Bencode;
-    /// assert_eq!(Bencode::decode(b"i42e").unwrap(), Bencode::Num(42));
+    /// # use tsunami::torrent_ast::Bencode;
+    /// assert!(Bencode::decode(b"i42e").unwrap() == Bencode::Num(42));
     ///
     /// // consumed an empty dict but there was input left
-    /// assert_eq!(Bencode::decode(b"dei0e"), None);
+    /// assert!(Bencode::decode(b"i42e ") == None);
     /// ```
     crate fn decode(input: &[u8]) -> Option<Bencode> {
         match Bencode::parse_benc(input) {
@@ -49,7 +108,7 @@ impl<'a> Bencode<'a> {
     ///
     /// # Examples
     /// ```ignore
-    /// # use tsunami::bencode::Bencode;
+    /// # use tsunami::torrent_ast::Bencode;
     ///
     /// let input = b"d4:infod5:helloi2eee";
     /// let expected = Some([
@@ -58,15 +117,15 @@ impl<'a> Bencode<'a> {
     ///     139,  69, 214, 205,  74,
     ///     149, 138, 168,  35,  80, ]);
     ///
-    /// assert_eq!(Bencode::dict_hash(&input[..], "info"), expected);
+    /// assert!(Bencode::hash_dict(&input[..], "info") == expected);
     /// ```
-    crate fn dict_hash(input: &[u8], key: &str) -> Option<[u8; 20]> {
+    crate fn hash_dict(input: &[u8], key: &str) -> Option<[u8; 20]> {
         // SHA-1 hash includes surrounding 'd' and 'e' tags
         //
-        // let torrent file: = "d ... 4:infod ... e ... e";
+        // let input         = "d ... 4:infod ... e ... e";
         // let (start, end)  =     start -> [     ] <- end
         //
-        // sha1.sum( torrent_file[start..=end] )
+        // sha1.sum( input[start..=end] )
 
         map(
             delimited(
@@ -94,10 +153,10 @@ impl<'a> Bencode<'a> {
     ///
     /// # Examples
     /// ```ignore
-    /// # use tsunami::bencode::Bencode;
+    /// # use tsunami::torrent_ast::Bencode;
     ///
-    /// assert_eq!(Bencode::Str("str").str(), Some("str"));
-    /// assert_eq!(Bencode::BStr(b"str").str(), None);
+    /// assert!(Bencode::Str("str").str() == Some("str"));
+    /// assert!(Bencode::BStr(b"str").str() == None);
     /// ```
     crate fn str(self) -> Option<&'a str> {
         match self {
@@ -110,10 +169,10 @@ impl<'a> Bencode<'a> {
     ///
     /// # Examples
     /// ```ignore
-    /// # use tsunami::bencode::Bencode;
+    /// # use tsunami::torrent_ast::Bencode;
     ///
-    /// assert_eq!(Bencode::BStr(b"str").bstr(), Some(&b"str"[..]));
-    /// assert_eq!(Bencode::Str("str").bstr(), None);
+    /// assert!(Bencode::BStr(b"str").bstr() == Some(&b"str"[..]));
+    /// assert!(Bencode::Str("str").bstr() == None);
     /// ```
     crate fn bstr(self) -> Option<&'a [u8]> {
         match self {
@@ -126,10 +185,10 @@ impl<'a> Bencode<'a> {
     ///
     /// # Examples
     /// ```ignore
-    /// # use tsunami::bencode::Bencode;
+    /// # use tsunami::torrent_ast::Bencode;
     ///
-    /// assert_eq!(Bencode::Num(32).num(), Some(32));
-    /// # assert_eq!(Bencode::Str("str").num(), None);
+    /// assert!(Bencode::Num(32).num() == Some(32));
+    /// # assert!(Bencode::Str("str").num() == None);
     /// ```
     crate fn num(self) -> Option<i64> {
         match self {
@@ -142,13 +201,13 @@ impl<'a> Bencode<'a> {
     ///
     /// # Examples
     /// ```ignore
-    /// # use tsunami::bencode::Bencode;
+    /// # use tsunami::torrent_ast::Bencode;
     ///
-    /// let list = vec![Bencode::Num(1 << 42)];
-    /// let benc = Bencode::List(list.clone());
+    /// let nums = || vec![Bencode::Num(1 << 42)];
+    /// let benc = Bencode::List(nums());
     ///
-    /// assert_eq!(benc.list(), Some(list));
-    /// # assert_eq!(B::Str("str").list(), None);
+    /// assert!(benc.list() == Some(nums()));
+    /// # assert!(Bencode::Str("str").list() == None);
     /// ```
     crate fn list(self) -> Option<Vec<Bencode<'a>>> {
         match self {
@@ -162,15 +221,13 @@ impl<'a> Bencode<'a> {
     /// # Examples
     /// ```ignore
     /// # use std::collections::HashMap;
-    /// # use tsunami::bencode::Bencode;
+    /// # use tsunami::torrent_ast::Bencode;
     ///
-    /// let mut dict = HashMap::new();
-    /// dict.insert("num", Bencode::Num(32));
+    /// let dict = || { HashMap::from([ ("num", Bencode::Num(32)) ]) };
+    /// let benc = Bencode::Dict(dict());
     ///
-    /// let benc = Bencode::Dict(dict.clone());
-    ///
-    /// assert_eq!(benc.dict(), Some(dict));
-    /// # assert_eq!(Bencode::Str("str").dict(), None);
+    /// assert!(benc.dict() == Some(dict()));
+    /// # assert!(Bencode::Str("str").dict() == None);
     /// ```
     crate fn dict(self) -> Option<HashMap<&'a str, Bencode<'a>>> {
         match self {
@@ -184,20 +241,22 @@ impl<'a> Bencode<'a> {
     ///
     /// # Examples
     /// ```ignore
-    /// # use tsunami::bencode::Bencode as B;
+    /// # use tsunami::torrent_ast::Bencode as B;
     ///
-    /// let list = vec![ B::Num(0), B::Num(1), B::Str("two") ];
-    /// let benc = B::List(list.clone());
+    /// let list = || vec![ B::Num(0), B::Num(1), B::Str("two") ];
+    /// let benc = || B::List(list());
     ///
-    /// assert_eq!(benc.clone().map_list(|b| Some(b)), Some(list));
-    /// assert_eq!(benc.map_list(|b| b.num()), None);
+    /// assert!(benc().map_list(|b| Some(b)) == Some(list()));
+    /// assert!(benc().map_list(|b| b.num()) == None);
     /// ```
     crate fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
-        self.list()?.into_iter().flat_map_all(op)
+        self.list()?.into_iter().map(op).try_collect()
     }
 }
 
-impl Bencode<'a> {
+type Parsed<'a, T> = IResult<&'a [u8], T>;
+
+impl<'a> Bencode<'a> {
     // nom bencode parsers
 
     fn parse_benc(input: &'a [u8]) -> Parsed<Bencode> {
@@ -222,9 +281,9 @@ impl Bencode<'a> {
     /// a bencoded string is a base-ten length followed by a colon (:) and then the string
     ///
     /// # Examples
-    /// ```ignore
-    /// # use tsunami::bencode::Bencode as B;
-    /// assert_eq!(B::parse_str(b"5:hello").unwrap().1, &b"hello"[..]);
+    /// ``` ignore
+    /// # use tsunami::torrent_ast::Bencode;
+    /// assert!(Bencode::parse_str(b"5:hello").unwrap().1 == &b"hello"[..]);
     /// ```
     fn parse_str(input: &[u8]) -> Parsed<&[u8]> {
         length_data(terminated(
@@ -327,9 +386,7 @@ mod tests {
 
     macro_rules! hashmap {
         ($($k:expr => $v:expr),*) => ({
-            let mut d = ::std::collections::HashMap::new();
-            $(d.insert($k, $v);)*
-            d
+            ::std::collections::HashMap::from([$(($k, $v),)+])
         });
 
         ($($k:expr => $v:expr),+,) => (hashmap!($($k => $v),+));
@@ -440,14 +497,10 @@ mod tests {
     #[test]
     fn parse_dict() {
         let cases = vec![
-            // comment to prevent rustfmt from collapsing cases into a single line :/
             ("de", HashMap::new()),
             (
                 "d3:onei1e3:twoi2ee",
-                hashmap! {
-                    "one" => B::Num(1),
-                    "two" => B::Num(2),
-                },
+                hashmap!{ "one" => B::Num(1), "two" => B::Num(2) },
             ),
             (
                 concat!(
@@ -463,11 +516,11 @@ mod tests {
                         B::Str("http://direct.example.com/mock1"),
                         B::Str("http://direct.example.com/mock2"),
                     ]),
-                    "info" => B::Dict(hashmap!(
+                    "info" => B::Dict(hashmap!{
                         "length"       => B::Num(562949953421312),
                         "name"         => B::Str("あいえおう"),
                         "piece length" => B::Num(536870912),
-                    )),
+                    }),
                 }
             ),
         ];
@@ -508,34 +561,28 @@ mod tests {
                     "iece lengthi536870912eee"
                 ).as_bytes(),
                 [
-                    0x83, 0x55, 0x11, 0x80, 0x8c,
-                    0xd6, 0x54, 0x2c, 0x1b, 0xc5,
-                    0x19, 0x8d, 0x2a, 0x48, 0x9d,
-                    0xce, 0xd5, 0x2b, 0x53, 0x3a,
+                    0x83, 0x55, 0x11, 0x80, 0x8c, 0xd6, 0x54, 0x2c, 0x1b, 0xc5,
+                    0x19, 0x8d, 0x2a, 0x48, 0x9d, 0xce, 0xd5, 0x2b, 0x53, 0x3a,
                 ],
             ),
             (
                 include_bytes!("test_data/mock_dir.torrent"),
                 [
-                    0x74, 0x53, 0x68, 0x65, 0xe7,
-                    0x7a, 0xcc, 0x72, 0xf2, 0x98,
-                    0xc4, 0x88, 0xc3, 0x2c, 0x31,
-                    0xab, 0x9b, 0x96, 0x98, 0xb1,
+                    0x74, 0x53, 0x68, 0x65, 0xe7, 0x7a, 0xcc, 0x72, 0xf2, 0x98,
+                    0xc4, 0x88, 0xc3, 0x2c, 0x31, 0xab, 0x9b, 0x96, 0x98, 0xb1,
                 ],
             ),
             (
                 include_bytes!("test_data/mock_file.torrent"),
                 [
-                    0x0b, 0x05, 0xab, 0xa1, 0xf2,
-                    0xa0, 0xb2, 0xe6, 0xdc, 0x92,
-                    0xf1, 0xdb, 0x11, 0x43, 0x3e,
-                    0x5f, 0x3a, 0x82, 0x0b, 0xad,
+                    0x0b, 0x05, 0xab, 0xa1, 0xf2, 0xa0, 0xb2, 0xe6, 0xdc, 0x92,
+                    0xf1, 0xdb, 0x11, 0x43, 0x3e, 0x5f, 0x3a, 0x82, 0x0b, 0xad,
                 ],
             ),
         ];
 
         for (torrent, expected) in cases {
-            let info_hash = B::dict_hash(torrent, "info").unwrap();
+            let info_hash = B::hash_dict(torrent, "info").unwrap();
             assert_eq!(info_hash, expected);
         }
     }

@@ -8,7 +8,7 @@ pub type Result<O, E = Error> = StdResult<O, E>;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("tracker sent an invalid response")]
-    InvalidTrackerResp { failure_reason: Option<String> },
+    InvalidTrackerResp { reason: Option<String> },
 
     #[error("exhausted all available trackers")]
     NoTrackerAvailable,

@@ -5,14 +5,12 @@ use bitvec::prelude::{bitbox, BitBox, Lsb0};
 use byteorder::{ByteOrder, BE};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufStream},
-    net::TcpStream,
+    net::{TcpStream, ToSocketAddrs},
 };
 
-use crate::{
-    error::{DecodeError, Result},
-    utils::num_ext::KB,
-};
+use crate::error::{DecodeError, Result};
 
+#[derive(Debug)]
 crate struct Peer {
     peer_id: String,
     bitfield: BitBox,
@@ -31,18 +29,10 @@ bitflags! {
 }
 
 impl Peer {
-    const MAX_MSG_LENGTH: u32 = 16 * KB as u32;
+    const MAX_MSG_LENGTH: u32 = 1024 * 16; // 16 KiB
 
-    async fn run_loop() {
-        // use crate::utils::mem_of;
-        // use crate::utils::num_ext;
-
-        // let (s, r) = async_channel::bounded(mem_of(200 * num_ext::MB));
-        // s.send(String::from("hello")).await;
-    }
-
-    crate async fn handshake(
-        mut conn: TcpStream,
+    crate async fn connect(
+        addr: impl ToSocketAddrs,
         info_hash: &[u8],
         peer_id: &[u8],
         total_pieces: usize,
@@ -57,6 +47,7 @@ impl Peer {
         //     20 | peer_id
         // ------ | total
         //     68
+        let mut conn = TcpStream::connect(addr).await.ok()?;
         let (mut rx, mut tx) = conn.split();
 
         // write our end of the handshake
@@ -114,7 +105,7 @@ impl Peer {
         Some(Peer {
             status: Status::SELF_CHOKED | Status::PEER_CHOKED,
             bitfield: bitbox![usize, Lsb0; 0; total_pieces],
-            conn: BufStream::with_capacity(8 * KB, 8 * KB, conn),
+            conn: BufStream::new(conn),
             peer_id,
         })
     }
@@ -153,19 +144,8 @@ impl Peer {
             return Err(DecodeError::MessageId(msg_id, length));
         }
 
-        // todo: would like to use read_exact but it's 96 bytes vs 80 manually impl read_exact
-        //       honestly could be less if read didn't allocate
-        let buf = {
-            let mut buf = vec![0; length as usize - 4].into_boxed_slice();
-            let mut len = 0;
-
-            while len != buf.len() {
-                let n = self.conn.read(&mut buf[len..]).await?;
-                len += n;
-            }
-
-            buf.into_vec()
-        };
+        let mut buf = vec![0; length as usize - 4].into_boxed_slice();
+        self.conn.read_exact(&mut buf).await?;
 
         let msg = match msg_id {
             0 => Message::Choke,
@@ -173,7 +153,7 @@ impl Peer {
             2 => Message::Interested,
             3 => Message::NotInterested,
             4 => Message::Have(BE::read_u32(&buf[..])),
-            5 => Message::Bitfield(buf.into_boxed_slice()),
+            5 => Message::Bitfield(buf),
             6 => Message::Request {
                 index: BE::read_u32(&buf[..]),
                 begin: BE::read_u32(&buf[..]),
@@ -182,7 +162,7 @@ impl Peer {
             7 => Message::Piece {
                 index: BE::read_u32(&buf[..]),
                 begin: BE::read_u32(&buf[..]),
-                block: buf.into_boxed_slice(),
+                block: buf,
             },
             8 => Message::Cancel {
                 index: BE::read_u32(&buf[..]),
@@ -228,7 +208,7 @@ crate enum Message {
 
 #[cfg(test)]
 mod test {
-    use std::mem::size_of_val;
+    use std::mem::{size_of, size_of_val};
 
     use tokio::{
         io::BufStream,
@@ -237,12 +217,17 @@ mod test {
 
     use crate::peer::{Peer, Status};
 
+    struct MsgData {
+        length: u32,
+        msg_id: u8,
+        buf: [u8; 13],
+        block: Box<[u8]>,
+    }
+
     #[tokio::test]
     async fn arr_size() {
         let addr = "127.0.0.1:34567";
         let _l = TcpListener::bind(addr).await.unwrap();
-
-        let t = TcpStream::connect(addr).await.unwrap();
 
         let mut p = Peer {
             peer_id: "".to_string(),
@@ -253,7 +238,12 @@ mod test {
 
         println!(
             "handshake future is {:?} bytes",
-            size_of_val(&Peer::handshake(t, &b""[..], &b""[..], 0))
+            size_of_val(&Peer::connect(addr, &b""[..], &b""[..], 0))
+        );
+
+        println!(
+            "decode_message baseline is {:?} bytes",
+            size_of::<MsgData>(),
         );
 
         println!(
