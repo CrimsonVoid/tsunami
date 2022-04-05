@@ -102,7 +102,7 @@ impl Torrent {
             }
         };
 
-        let files = Self::build_files(&info, &base_dir)?;
+        let files = Self::build_files(&info, base_dir)?;
         let total_bytes = files
             .iter()
             .map(|f| f.length)

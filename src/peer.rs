@@ -62,8 +62,8 @@ impl Peer {
                 IoSlice::new(peer_id),
             ][..];
 
-            while io_bufs.len() != 0 {
-                let n = tx.write_vectored(&io_bufs).await?;
+            while !io_bufs.is_empty() {
+                let n = tx.write_vectored(io_bufs).await?;
                 IoSlice::advance_slices(&mut io_bufs, n);
             }
 
@@ -83,7 +83,7 @@ impl Peer {
 
             // extension flags
             rx.read_exact(&mut buffer[..8]).await?;
-            if &buffer[..8] != [0; 8] {
+            if buffer[..8] != [0; 8] {
                 // we currently do not support any bt extensions
                 return err;
             }
