@@ -7,7 +7,6 @@ use nom::{
     combinator::{map, map_opt, map_res, opt, recognize},
     multi::{length_data, many0},
     sequence::{delimited, terminated, tuple},
-    IResult,
 };
 use ring::digest;
 
@@ -45,7 +44,7 @@ impl<'a> TorrentAST<'a> {
         let mut torrent = Bencode::decode(file)?.dict()?;
         let mut info = torrent.remove("info")?.dict()?;
 
-        Some(TorrentAST {
+        TorrentAST {
             announce: torrent.remove("announce")?.str()?,
             announce_list: try {
                 torrent
@@ -58,13 +57,39 @@ impl<'a> TorrentAST<'a> {
                 piece_length: info.remove("piece length")?.num()?,
 
                 length: try { info.remove("length")?.num()? },
-                files: try { info.remove("files")?.map_list(Self::parse_file)? },
+                files: try { info.remove("files")?.map_list(FileAST::new)? },
                 private: try { info.remove("private")?.num()? },
             },
-        })
+        }
+        .validate()
     }
 
-    fn parse_file(benc: Bencode<'a>) -> Option<FileAST<'a>> {
+    fn validate(self) -> Option<TorrentAST<'a>> {
+        // pieces is a list of 20 byte sha1 hashes
+        if self.info.pieces.len() % 20 != 0 {
+            return None;
+        }
+
+        // we can have at most 2^32 pieces. this limit is not directly defined but since index
+        // in a Peer's Request message is limited to u32 we can infer there must be fewer than
+        // 2^32 pieces.
+        if self.info.pieces.len() > u32::MAX as usize {
+            return None;
+        }
+
+        // length and files are mutually exclusive for a valid torrent
+        if self.info.length.is_some() && self.info.files.is_some() {
+            return None;
+        } else if self.info.length.is_none() && self.info.files.is_none() {
+            return None;
+        }
+
+        Some(self)
+    }
+}
+
+impl<'a> FileAST<'a> {
+    fn new(benc: Bencode) -> Option<FileAST> {
         let mut file = benc.dict()?;
 
         Some(FileAST {
@@ -98,10 +123,12 @@ impl<'a> Bencode<'a> {
     /// assert!(Bencode::decode(b"i42e ") == None);
     /// ```
     crate fn decode(input: &[u8]) -> Option<Bencode> {
-        match Bencode::parse_benc(input) {
-            Ok((&[], benc)) => Some(benc), // make sure we consumed the whole input
-            _ => None,
-        }
+        // make sure we consumed the whole input
+        let Ok((&[], benc)) = Bencode::parse_benc(input) else {
+            return None
+        };
+
+        Some(benc)
     }
 
     /// compute the SHA-1 hash of a dictionary in input
@@ -254,7 +281,7 @@ impl<'a> Bencode<'a> {
     }
 }
 
-type Parsed<'a, T> = IResult<&'a [u8], T>;
+type Parsed<'a, T> = nom::IResult<&'a [u8], T>;
 
 impl<'a> Bencode<'a> {
     // nom bencode parsers

@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
-    ffi::OsStr,
     fmt::Write,
+    iter::once,
     net::{Ipv4Addr, SocketAddrV4},
     path::{Path, PathBuf},
     sync::Arc,
@@ -9,13 +9,14 @@ use std::{
 
 use byteorder::{ByteOrder, BE};
 use chrono::{DateTime, Duration, Utc};
-use hyper::{body, client::HttpConnector, Client};
+use hyper::body::Bytes;
 use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
 
 use crate::{
     error::{Error, Result},
     peer::Peer,
     torrent_ast::{Bencode, InfoAST, TorrentAST},
+    utils,
 };
 
 pub type Sha1Hash = [u8; 20];
@@ -60,53 +61,35 @@ struct File {
 }
 
 impl Torrent {
-    pub fn new(buf: &[u8], peer_id: Arc<String>, base_dir: &Path) -> Option<Torrent> {
+    crate fn new(buf: &[u8], peer_id: Arc<String>, base_dir: &Path) -> Option<Torrent> {
+        Self::validate(&peer_id, base_dir)?;
         let torrent = TorrentAST::decode(buf)?;
         let info = torrent.info;
 
-        let pieces = {
-            // if let num_pieces = info.pieces.len() &&
-            //     num_pieces % 20 != 0 || num_pieces > 1 << 32 { return None; }
+        let pieces = info
+            .pieces
+            .chunks(20)
+            .map(|p| p.try_into().unwrap())
+            .collect();
 
-            // pieces is a list of 20 byte sha1 hashes
-            if info.pieces.len() % 20 != 0 {
-                return None;
-            }
+        let trackers = if let Some(trs) = torrent.announce_list {
+            let mut rng = SmallRng::seed_from_u64(Utc::now().timestamp_millis() as u64);
 
-            // we can have at most 2^32 pieces. this limit is not directly defined but since index
-            // in a Peer's Request message is limited to u32 we can infer there must be fewer than
-            // 2^32 pieces.
-            if info.pieces.len() > 1 << 32 {
-                return None;
-            }
-
-            info.pieces
-                .chunks(20)
-                .map(|p| p.try_into().unwrap())
+            trs.into_iter()
+                .map(|mut tr| {
+                    tr.shuffle(&mut rng);
+                    tr.into_iter().map(String::from).collect()
+                })
                 .collect()
-        };
-
-        let trackers = match torrent.announce_list {
-            None => vec![vec![torrent.announce.into()]],
-
-            Some(trs) => {
-                let mut rng = SmallRng::seed_from_u64(Utc::now().timestamp_millis() as u64);
-
-                // Vec<Vec<&str>> -> Vec<Vec<String>>
-                trs.into_iter()
-                    .map(|mut tr| {
-                        tr.shuffle(&mut rng);
-                        tr.into_iter().map(|t| t.into()).collect()
-                    })
-                    .collect()
-            }
+        } else {
+            vec![vec![torrent.announce.into()]]
         };
 
         let files = Self::build_files(&info, base_dir)?;
         let total_bytes = files
             .iter()
             .map(|f| f.length)
-            .try_fold(0u64, |acc, i| acc.checked_add(i))?;
+            .try_fold(0u64, u64::checked_add)?;
 
         Some(Torrent {
             info: Info {
@@ -128,65 +111,45 @@ impl Torrent {
         })
     }
 
-    fn build_files(info: &InfoAST, base_dir: &Path) -> Option<Vec<File>> {
-        // for single file torrents this is `InfoAST.name`
-        // for  multi file torrents this is `InfoAST.name + FileAST.path.join("/")`
-
-        // length and files are mutually exclusive for a valid torrent
-        if info.length.is_some() && info.files.is_some() {
+    fn validate(peer_id: &str, base_dir: &Path) -> Option<()> {
+        if peer_id.len() != 20 {
             return None;
         }
 
-        let build_file = |length: i64, torrent_dir: &str, path: &[&str]| -> Option<File> {
-            if length <= 0 {
-                return None;
-            }
+        if !base_dir.has_root() {
+            return None;
+        }
 
-            // todo: should we check for invalid paths? (incl os-specific blacklists) ?
-            let valid_path = |p: &str| p != "." && p != "..";
+        Some(())
+    }
 
-            let parts = path.iter().filter(|p| valid_path(p)).map(Path::new);
-            let file_path =
-                PathBuf::from_iter([base_dir, Path::new(torrent_dir)].into_iter().chain(parts));
-
-            // todo: fix this check. should be file_path ~= base_dir + torrent_dir
-            // path was empty or all path segments were filtered out
-            if file_path == OsStr::new(base_dir) {
-                return None;
-            }
-
-            Some(File {
-                file: file_path,
-                length: length.try_into().ok()?,
-            })
-        };
-
-        // single file case, name is filename
+    fn build_files(info: &InfoAST, base_dir: &Path) -> Option<Vec<File>> {
+        // single file case, info.name is filename
         if let Some(len) = info.length {
-            let file = build_file(len, "", &[info.name][..])?;
+            let file = File::new(len, base_dir, &[info.name][..])?;
             return Some(vec![file]);
         }
 
-        // todo: info.name could be "", making all files here top-level
-        // todo: validate info.name
-        let torrent_dir = info.name;
+        let base_dir = {
+            let d = utils::valid_path(info.name).then(|| info.name)?;
+            base_dir.join(Path::new(d))
+        };
 
-        info.files // : Option<Vec<_>>
+        info.files
             .as_ref()?
             .iter()
-            .map(|file| build_file(file.length, torrent_dir, &file.path))
+            .map(|file| File::new(file.length, &base_dir, &file.path))
             .try_collect()
     }
 
-    async fn fetch_peers(&mut self) -> Result<()> {
+    async fn refresh_peers(&mut self) -> Result<()> {
         if self.next_announce <= Utc::now() && !self.peers.is_empty() {
             return Ok(());
         }
 
-        let client = Client::new();
-        let mut tracker_url = String::new();
+        let mut url_buf = String::new();
 
-        // find the first available tracker we can reach, and move it the the front of its own list.
+        // find the first available tracker we can reach and move it the the front of its own list.
         //
         // for example, if b3 is the first tracker to respond:
         //     [ [a1, a2], [b1, b2, b3], [c1] ]
@@ -198,11 +161,11 @@ impl Torrent {
         for outer in 0..self.trackers.len() {
             for inner in 0..self.trackers[outer].len() {
                 let tracker = &self.trackers[outer][inner];
+                self.build_tracker_url(tracker, &mut url_buf);
 
                 // request peers from tracker
-                self.build_tracker_url(&mut tracker_url, tracker);
-                let Ok((interval, peers)) = Self::get_peers_from_tracker(&client, &tracker_url).await else {
-                    tracker_url.clear();
+                let body = utils::get_body(&url_buf).await?;
+                let Ok((interval, peers)) = Self::parse_tracker_resp(body) else {
                     continue;
                 };
 
@@ -210,8 +173,8 @@ impl Torrent {
                 // outer tracker group order)
                 self.trackers[outer][..=inner].rotate_right(1);
 
-                // set next tracker update interval
-                let interval = Duration::seconds(interval.clamp(0, i64::MAX as u64) as i64);
+                // set next tracker update interval, min 5m
+                let interval = Duration::seconds(interval.clamp(300, i64::MAX as u64) as i64);
                 self.next_announce = Utc::now() + interval;
 
                 // update our list of peers
@@ -226,106 +189,98 @@ impl Torrent {
         Err(Error::NoTrackerAvailable)
     }
 
-    fn build_tracker_url(&self, mut buffer: &mut String, tracker: &str) {
-        const UPPERHEX: &[u8; 16] = b"0123456789ABCDEF";
+    fn build_tracker_url(&self, tracker: &str, mut buffer: &mut String) {
+        const HEXES: &[u8; 16] = b"0123456789ABCDEF";
+        buffer.clear();
 
         let mut info_hash = String::with_capacity(60);
         for b in self.info.info_hash {
             info_hash.push('%');
-            info_hash.push(UPPERHEX[b as usize >> 4] as char);
-            info_hash.push(UPPERHEX[b as usize & 15] as char);
+            info_hash.push(HEXES[b as usize >> 4] as char);
+            info_hash.push(HEXES[b as usize & 15] as char);
         }
 
         let _ = write!(
             &mut buffer,
-            concat!(
-                "{}?",
-                "info_hash={info_hash}",
-                "&peer_id={peer_id}",
-                "&port={port}",
-                "&downloaded={downloaded}",
-                "&uploaded={uploaded}",
-                "&compact={compact}",
-                "&left={left}",
-            ),
-            tracker,
-            info_hash = info_hash,
-            peer_id = self.peer_id,
-            port = 6881,
-            downloaded = self.downloaded,
-            uploaded = self.uploaded,
-            compact = 1,
-            left = self.bytes_left, // TODO - need to compute later, not exactly file_length - downloaded
+            "{tracker}?info_hash={}&peer_id={}&port={}&downloaded={}&uploaded={}&compact={}&left={}",
+            info_hash,
+            self.peer_id,
+            6881,
+            self.downloaded,
+            self.uploaded,
+            1,
+            self.bytes_left,
         );
     }
 
-    async fn get_peers_from_tracker(
-        client: &Client<HttpConnector>,
-        tracker: &str,
-    ) -> Result<(u64, Vec<SocketAddrV4>)> {
-        let uri = tracker.parse()?;
-        let resp = client.get(uri).await?;
-        let resp = body::to_bytes(resp).await?;
-
-        let Some(Bencode::Dict(mut tracker)) = Bencode::decode(&resp) else {
-            return Err(Error::InvalidTrackerResp {
-                reason: None,
-            })
+    fn parse_tracker_resp(resp: Bytes) -> Result<(u64, Vec<SocketAddrV4>)> {
+        // todo: propagate error
+        let Some(mut tracker) = (try { Bencode::decode(&resp)?.dict()? }) else {
+            return Err(Error::InvalidTrackerResp(None))
         };
 
+        // TODO - avoid allocs
         if let Some(fail_msg) = tracker.remove("failure reason") {
-            // TODO - avoid allocs
-            let reason = fail_msg.str().map(|s| s.into());
-
-            return Err(Error::InvalidTrackerResp { reason });
+            let reason = try { fail_msg.str()?.into() };
+            return Err(Error::InvalidTrackerResp(reason));
         }
 
         // parse response into a (interval, sockaddr's) pair
-        let resp = 'resp: {
-            try {
-                let interval = match tracker.remove("interval")?.num()? {
-                    n if n < 0 => break 'resp None,
-                    n => n as u64,
-                };
+        let parse_resp = try {
+            let interval = tracker.remove("interval")?.num()?.try_into().ok()?;
 
-                let sock_addrs = match tracker.remove("peers")? {
-                    // list of (ip, port) pairs in BE order, format: IIIIPP  (I = Ip, P = Port)
-                    Bencode::BStr(peers) if peers.len() % 6 == 0 => {
-                        let mut sock_addrs = Vec::with_capacity(peers.len() / 6);
+            let peers = tracker.remove("peers")?;
+            let sock_addrs = if let Bencode::BStr(peers) = peers {
+                peers
+                    .chunks(6)
+                    .map(|host| {
+                        let ipv4 = Ipv4Addr::new(host[0], host[1], host[2], host[3]);
+                        let port = BE::read_u16(&host[4..]);
 
-                        for host in peers.chunks(6) {
-                            let ipv4 = Ipv4Addr::new(host[0], host[1], host[2], host[3]);
-                            let port = BE::read_u16(&host[4..]);
+                        SocketAddrV4::new(ipv4, port)
+                    })
+                    .collect()
+            } else if let Bencode::List(peers) = peers {
+                peers
+                    .into_iter()
+                    .map(|peer| {
+                        let mut peer = peer.dict()?;
+                        let ip = peer.remove("ip")?.str()?.parse().ok()?;
+                        let port = peer.remove("port")?.str()?.parse().ok()?;
 
-                            sock_addrs.push(SocketAddrV4::new(ipv4, port));
-                        }
+                        Some(SocketAddrV4::new(ip, port))
+                    })
+                    .try_collect()?
+            } else {
+                return Err(Error::InvalidTrackerResp(None));
+            };
 
-                        sock_addrs
-                    }
+            (interval, sock_addrs)
+        }: Option<_>;
 
-                    // list of {"ip", "port"} dicts
-                    Bencode::List(peers) => peers
-                        .into_iter()
-                        .map(|peer| {
-                            // todo: the spec defines "peer id" as well, but we do not need it rn and
-                            //       not really sure if it exists for all responses
-                            let mut peer = peer.dict()?;
+        parse_resp.ok_or(Error::InvalidTrackerResp(None))
+    }
+}
 
-                            let ip = peer.remove("ip")?.str()?.parse().ok()?;
-                            let port = peer.remove("port")?.str()?.parse().ok()?;
+impl File {
+    fn new(length: i64, torrent_dir: &Path, paths: &[&str]) -> Option<File> {
+        if length <= 0 {
+            return None;
+        }
 
-                            Some(SocketAddrV4::new(ip, port))
-                        })
-                        .try_collect()?,
+        // todo: os specific clean_path fns
+        let parts = paths.iter().filter(|p| utils::valid_path(p)).map(Path::new);
+        let file_path = PathBuf::from_iter(once(torrent_dir).into_iter().chain(parts));
 
-                    _ => break 'resp None,
-                };
+        // parts were empty or all path segments were filtered out
+        if file_path.ends_with(torrent_dir) {
+            return None;
+        }
 
-                (interval, sock_addrs)
-            }
-        };
-
-        resp.ok_or(Error::InvalidTrackerResp { reason: None })
+        Some(File {
+            file: file_path,
+            length: length.try_into().ok()?,
+        })
     }
 }
 
@@ -387,7 +342,8 @@ mod tests {
 
         for (file, dir_name) in test_files {
             let base_dir = PathBuf::from("/foo");
-            let torrent = Torrent::new(file, Arc::new("".into()), &base_dir).unwrap();
+            let torrent =
+                Torrent::new(file, Arc::new("-TS0001-|testClient|".into()), &base_dir).unwrap();
             let expected = tor_gen(&base_dir, dir_name);
 
             assert_eq!(torrent.trackers, expected.trackers);
@@ -399,9 +355,11 @@ mod tests {
     // #[tokio::test]
     // async fn get_peers() {
     //     let data = include_bytes!("test_data/debian.torrent");
-    //     let mut tsunami = Torrent::from_buf(data).unwrap();
-    //     let peers = tsunami.fetch_peers().await.unwrap();
+    //     let base_dir = env::temp_dir();
     //
-    //     println!("{:?}", peers);
+    //     let mut tsunami = Tsunami::new(base_dir).unwrap();
+    //     let torrent = tsunami.add_torrent(data).unwrap();
+    //     torrent.refresh_peers().await.unwrap();
+    //     println!("{:?}", torrent.peers.keys());
     // }
 }

@@ -1,4 +1,4 @@
-use std::io::IoSlice;
+use std::{io, io::IoSlice};
 
 use bitflags::bitflags;
 use bitvec::prelude::{bitbox, BitBox, Lsb0};
@@ -52,12 +52,12 @@ impl Peer {
 
         // write our end of the handshake
         let send = async {
-            let prefix = b"\x13Bittorrent Protocol\x00\x00\x00\x00\x00\x00\x00\x00";
+            const BT_PREFIX: &[u8; 28] = b"\x13Bittorrent Protocol\x00\x00\x00\x00\x00\x00\x00\x00";
 
             // todo: tokio docs state only the last buffer may be partially consumed, can we include
             //       an empty IoSlice and avoid manually checking if all bytes have been written?
             let mut io_bufs = &mut [
-                IoSlice::new(prefix),
+                IoSlice::new(BT_PREFIX),
                 IoSlice::new(info_hash),
                 IoSlice::new(peer_id),
             ][..];
@@ -72,32 +72,29 @@ impl Peer {
 
         // read a bittorrent greeting
         let recv = async {
-            let err = Err(std::io::Error::from(std::io::ErrorKind::Other));
-            let mut buffer = vec![0; 20];
+            const BT_PREFIX: &[u8; 20] = b"\x13Bittorrent Protocol";
+            let err = Err(io::Error::from(io::ErrorKind::Other));
+            let mut buf = vec![0; 20];
 
             // protocol prefix
-            rx.read_exact(&mut buffer[..19]).await?;
-            if buffer[..19] != *b"\x13Bittorrent Protocol" {
+            if let _ = rx.read_exact(&mut buf).await? && buf != BT_PREFIX {
                 return err;
             }
 
-            // extension flags
-            rx.read_exact(&mut buffer[..8]).await?;
-            if buffer[..8] != [0; 8] {
-                // we currently do not support any bt extensions
+            // extension flags (no extensions currently supported)
+            if let _ = rx.read_exact(&mut buf[..8]).await? && buf[..8] != [0; 8] {
                 return err;
             }
 
             // info_hash
-            rx.read_exact(&mut buffer).await?;
-            if buffer != info_hash {
+            if let _ = rx.read_exact(&mut buf).await? && buf != info_hash {
                 return err;
             }
 
             // peer id
-            buffer.fill(0);
-            rx.read_exact(&mut buffer).await?;
-            String::from_utf8(buffer).or(err)
+            buf.fill(0);
+            rx.read_exact(&mut buf).await?;
+            String::from_utf8(buf).or(err)
         };
 
         let (_, peer_id) = futures::try_join!(send, recv).ok()?;
@@ -237,7 +234,7 @@ mod test {
         };
 
         println!(
-            "handshake future is {:?} bytes",
+            "connect: {} bytes",
             size_of_val(&Peer::connect(addr, &b""[..], &b""[..], 0))
         );
 
@@ -246,9 +243,6 @@ mod test {
             size_of::<MsgData>(),
         );
 
-        println!(
-            "decode_message future is {:?} bytes",
-            size_of_val(&p.decode_message())
-        );
+        println!("decode_message: {} bytes", size_of_val(&p.decode_message()));
     }
 }

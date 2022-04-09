@@ -1,25 +1,20 @@
 #![feature(
     let_else,
+    let_chains,
     try_blocks,
-    label_break_value,
-    // async_closure,
     type_ascription,
     crate_visibility_modifier,
-    let_chains,
+    // label_break_value,
+    // async_closure,
 )]
-#![feature(
-    io_slice_advance,
-    iterator_try_collect,
-    iter_collect_into,
-    mixed_integer_ops,
-    default_free_fn
-)]
+#![feature(io_slice_advance, iterator_try_collect)]
 
 mod error;
 mod torrent_ast;
+#[allow(dead_code)]
 mod utils;
 
-#[allow(dead_code)]
+#[allow(dead_code, irrefutable_let_patterns)]
 mod peer;
 #[allow(dead_code)]
 mod torrent;
