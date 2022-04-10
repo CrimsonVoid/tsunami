@@ -220,16 +220,16 @@ impl Torrent {
         };
 
         // TODO - avoid allocs
-        if let Some(fail_msg) = tracker.remove("failure reason") {
+        if let Some(fail_msg) = tracker.remove(&b"failure reason"[..]) {
             let reason = try { fail_msg.str()?.into() };
             return Err(Error::InvalidTrackerResp(reason));
         }
 
         // parse response into a (interval, sockaddr's) pair
         let parse_resp = try {
-            let interval = tracker.remove("interval")?.num()?.try_into().ok()?;
+            let interval = tracker.remove(&b"interval"[..])?.num()?.try_into().ok()?;
 
-            let peers = tracker.remove("peers")?;
+            let peers = tracker.remove(&b"peers"[..])?;
             let sock_addrs = if let Bencode::BStr(peers) = peers {
                 peers
                     .chunks(6)
@@ -245,8 +245,8 @@ impl Torrent {
                     .into_iter()
                     .map(|peer| {
                         let mut peer = peer.dict()?;
-                        let ip = peer.remove("ip")?.str()?.parse().ok()?;
-                        let port = peer.remove("port")?.str()?.parse().ok()?;
+                        let ip = peer.remove(&b"ip"[..])?.str()?.parse().ok()?;
+                        let port = peer.remove(&b"port"[..])?.str()?.parse().ok()?;
 
                         Some(SocketAddrV4::new(ip, port))
                     })

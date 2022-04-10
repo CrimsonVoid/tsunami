@@ -1,10 +1,10 @@
-use std::{collections::HashMap, str::from_utf8};
+use std::collections::HashMap;
 
 use nom::{
     branch::alt,
     bytes::complete::tag,
     character::complete::{char as nchar, digit0, digit1, one_of},
-    combinator::{map, map_opt, map_res, opt, recognize},
+    combinator::{map, map_opt, opt, recognize},
     multi::{length_data, many0},
     sequence::{delimited, terminated, tuple},
 };
@@ -42,23 +42,23 @@ crate struct FileAST<'a> {
 impl<'a> TorrentAST<'a> {
     crate fn decode(file: &'a [u8]) -> Option<TorrentAST<'a>> {
         let mut torrent = Bencode::decode(file)?.dict()?;
-        let mut info = torrent.remove("info")?.dict()?;
+        let mut info = torrent.remove(&b"info"[..])?.dict()?;
 
         TorrentAST {
-            announce: torrent.remove("announce")?.str()?,
+            announce: torrent.remove(&b"announce"[..])?.str()?,
             announce_list: try {
                 torrent
-                    .remove("announce-list")?
+                    .remove(&b"announce-list"[..])?
                     .map_list(|l| l.map_list(Bencode::str))?
             },
             info: InfoAST {
-                name: info.remove("name")?.str()?,
-                pieces: info.remove("pieces")?.bstr()?,
-                piece_length: info.remove("piece length")?.num()?,
+                name: info.remove(&b"name"[..])?.str()?,
+                pieces: info.remove(&b"pieces"[..])?.bstr()?,
+                piece_length: info.remove(&b"piece length"[..])?.num()?,
 
-                length: try { info.remove("length")?.num()? },
-                files: try { info.remove("files")?.map_list(FileAST::new)? },
-                private: try { info.remove("private")?.num()? },
+                length: try { info.remove(&b"length"[..])?.num()? },
+                files: try { info.remove(&b"files"[..])?.map_list(FileAST::new)? },
+                private: try { info.remove(&b"private"[..])?.num()? },
             },
         }
         .validate()
@@ -93,8 +93,8 @@ impl<'a> FileAST<'a> {
         let mut file = benc.dict()?;
 
         Some(FileAST {
-            path: file.remove("path")?.map_list(|p| p.str())?,
-            length: file.remove("length")?.num()?,
+            path: file.remove(&b"path"[..])?.map_list(|p| p.str())?,
+            length: file.remove(&b"length"[..])?.num()?,
         })
     }
 }
@@ -105,7 +105,7 @@ pub enum Bencode<'a> {
     Str(&'a str),
     BStr(&'a [u8]),
     List(Vec<Bencode<'a>>),
-    Dict(HashMap<&'a str, Bencode<'a>>),
+    Dict(HashMap<&'a [u8], Bencode<'a>>),
 }
 
 impl<'a> Bencode<'a> {
@@ -256,7 +256,7 @@ impl<'a> Bencode<'a> {
     /// assert!(benc.dict() == Some(dict()));
     /// # assert!(Bencode::Str("str").dict() == None);
     /// ```
-    crate fn dict(self) -> Option<HashMap<&'a str, Bencode<'a>>> {
+    crate fn dict(self) -> Option<HashMap<&'a [u8], Bencode<'a>>> {
         match self {
             Bencode::Dict(d) => Some(d),
             _ => None,
@@ -356,17 +356,14 @@ impl<'a> Bencode<'a> {
     // dict keys must appear in sorted order
     //
     // pseudo format: d(Str Benc)*e
-    fn parse_dict(input: &'a [u8]) -> Parsed<HashMap<&str, Bencode>> {
-        // dicts keys should be valid utf8
-        let parse_str = map_res(Self::parse_str, from_utf8);
-
+    fn parse_dict(input: &'a [u8]) -> Parsed<HashMap<&[u8], Bencode>> {
         map_opt(
             delimited(
                 nchar('d'),
-                many0(tuple((parse_str, Self::parse_benc))),
+                many0(tuple((Self::parse_str, Self::parse_benc))),
                 nchar('e'),
             ),
-            |kv_pairs: Vec<(&str, Bencode)>| {
+            |kv_pairs: Vec<(&[u8], Bencode)>| {
                 kv_pairs
                     .windows(2)
                     .all(|p| p[0].0 < p[1].0)
@@ -410,6 +407,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::Bencode as B;
+    use crate::torrent_ast::Bencode;
 
     macro_rules! hashmap {
         ($($k:expr => $v:expr),*) => ({
@@ -503,13 +501,13 @@ mod tests {
                         B::Num(3),
                         B::Str("hi"),
                         B::Dict(hashmap! {
-                            "list"    => B::List(vec![B::Num(1), B::Num(2), B::Num(3)]),
-                            "yahallo" => B::Str(":)"),
+                            &b"list"[..]    => B::List(vec![B::Num(1), B::Num(2), B::Num(3)]),
+                            &b"yahallo"[..] => B::Str(":)"),
                         }),
                     ]),
                     B::Dict(hashmap! {
-                        "hi"  => B::Str("hello"),
-                        "int" => B::Num(15),
+                        &b"hi"[..]  => B::Str("hello"),
+                        &b"int"[..] => B::Num(15),
                     }),
                 ],
             ),
@@ -527,7 +525,7 @@ mod tests {
             ("de", HashMap::new()),
             (
                 "d3:onei1e3:twoi2ee",
-                hashmap!{ "one" => B::Num(1), "two" => B::Num(2) },
+                hashmap!{ &b"one"[..] => B::Num(1), &b"two"[..] => B::Num(2) },
             ),
             (
                 concat!(
@@ -536,17 +534,17 @@ mod tests {
                     "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
                     "iece lengthi536870912eee"),
                 hashmap! {
-                    "announce"      => B::Str("http://tracker.example.com:8080/announce"),
-                    "comment"       => B::Str("\"Hello mock data\""),
-                    "creation date" => B::Num(1234567890),
-                    "httpseeds"     => B::List(vec![
+                    &b"announce"[..]      => B::Str("http://tracker.example.com:8080/announce"),
+                    &b"comment"[..]       => B::Str("\"Hello mock data\""),
+                    &b"creation date"[..] => B::Num(1234567890),
+                    &b"httpseeds"[..]     => B::List(vec![
                         B::Str("http://direct.example.com/mock1"),
                         B::Str("http://direct.example.com/mock2"),
                     ]),
-                    "info" => B::Dict(hashmap!{
-                        "length"       => B::Num(562949953421312),
-                        "name"         => B::Str("あいえおう"),
-                        "piece length" => B::Num(536870912),
+                    &b"info"[..] => B::Dict(hashmap!{
+                        &b"length"[..]       => B::Num(562949953421312),
+                        &b"name"[..]         => B::Str("あいえおう"),
+                        &b"piece length"[..] => B::Num(536870912),
                     }),
                 }
             ),
@@ -611,6 +609,64 @@ mod tests {
         for (torrent, expected) in cases {
             let info_hash = B::hash_dict(torrent, "info").unwrap();
             assert_eq!(info_hash, expected);
+        }
+    }
+
+    #[test]
+    fn decode_bt_test() {
+        let test_files = [
+            &include_bytes!("test_data/bittorrent-v2-test.torrent")[..],
+            &include_bytes!("test_data/bittorrent-v2-hybrid-test.torrent")[..],
+        ];
+
+        for file in test_files {
+            let torrent = B::decode(file).unwrap();
+            print_benc(torrent, 2);
+        }
+    }
+
+    fn print_benc(v: Bencode, spaces: usize) {
+        match v {
+            Bencode::Num(_) | Bencode::Str(_) => {
+                print!("{v:?},")
+            }
+            Bencode::BStr(b) => {
+                if b.len() >= 20 {
+                    let b = &b[..=20];
+                    print!("BStr({b:?} ..),");
+                } else {
+                    print!("BStr({b:?}),");
+                }
+            }
+            Bencode::List(l) => {
+                if l.len() < 4 {
+                    print!("{l:?},");
+                    return;
+                }
+
+                println!("List([");
+                for node in l {
+                    (0..spaces).for_each(|_| print!(" "));
+                    print_benc(node, spaces + 2);
+                    println!(",");
+                }
+                (0..spaces - 2).for_each(|_| print!(" "));
+                print!("])");
+            }
+            Bencode::Dict(d) => {
+                println!("{{");
+
+                for (k, v) in d {
+                    let k = String::from_utf8_lossy(k);
+                    (0..spaces).for_each(|_| print!(" "));
+                    print!("{k:?} => ");
+                    print_benc(v, spaces + 2);
+                    println!();
+                }
+
+                (0..spaces - 2).for_each(|_| print!(" "));
+                print!("}}");
+            }
         }
     }
 }
