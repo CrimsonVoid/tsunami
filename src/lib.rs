@@ -3,7 +3,6 @@
     let_chains,
     try_blocks,
     type_ascription,
-    crate_visibility_modifier,
     // label_break_value,
     // async_closure,
 )]

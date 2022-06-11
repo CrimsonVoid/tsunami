@@ -61,7 +61,7 @@ struct File {
 }
 
 impl Torrent {
-    crate fn new(buf: &[u8], peer_id: Arc<String>, base_dir: &Path) -> Option<Torrent> {
+    pub(crate) fn new(buf: &[u8], peer_id: Arc<String>, base_dir: &Path) -> Option<Torrent> {
         Self::validate(&peer_id, base_dir)?;
         let torrent = TorrentAST::decode(buf)?;
         let info = torrent.info;

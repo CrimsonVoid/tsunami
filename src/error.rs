@@ -21,7 +21,7 @@ pub enum Error {
 }
 
 #[derive(Debug, Error)]
-crate enum DecodeError {
+pub(crate) enum DecodeError {
     #[error("io error")]
     Io(#[from] io::Error),
 

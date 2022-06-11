@@ -5,7 +5,7 @@ use lazy_static::lazy_static;
 
 use crate::error::Result;
 
-crate async fn get_body(url: &str) -> Result<Bytes> {
+pub(crate) async fn get_body(url: &str) -> Result<Bytes> {
     lazy_static! {
         static ref CLIENT: Client<HttpConnector> = Client::new();
     }
@@ -15,13 +15,13 @@ crate async fn get_body(url: &str) -> Result<Bytes> {
     Ok(body::to_bytes(resp).await?)
 }
 
-crate fn valid_path(p: &str) -> bool {
+pub(crate) fn valid_path(p: &str) -> bool {
     // todo: should we check for invalid paths? (incl os-specific blacklists) ?
 
     p != "." && p != ".." && p != ""
 }
 
-crate fn download_dir() -> PathBuf {
+pub(crate) fn download_dir() -> PathBuf {
     dirs::download_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(temp_dir)
