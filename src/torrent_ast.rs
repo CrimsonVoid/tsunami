@@ -13,34 +13,34 @@ use ring::digest;
 // TorrentAST is a structural representation of a torrent file; fields map over almost identically,
 // with dict's being represented as sub-structs
 #[derive(Debug, PartialEq)]
-pub(crate) struct TorrentAST<'a> {
-    pub(crate) announce: &'a str,
-    pub(crate) announce_list: Option<Vec<Vec<&'a str>>>,
-    pub(crate) info: InfoAST<'a>,
+pub struct TorrentAST<'a> {
+    pub announce: &'a str,
+    pub announce_list: Option<Vec<Vec<&'a str>>>,
+    pub info: InfoAST<'a>,
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct InfoAST<'a> {
-    pub(crate) piece_length: i64,
-    pub(crate) pieces: &'a [u8],
-    pub(crate) private: Option<i64>,
-    pub(crate) name: &'a str,
+pub struct InfoAST<'a> {
+    pub piece_length: i64,
+    pub pieces: &'a [u8],
+    pub private: Option<i64>,
+    pub name: &'a str,
 
     // length and files are mutually exclusive
     // single file case
-    pub(crate) length: Option<i64>,
+    pub length: Option<i64>,
     // multi-file case
-    pub(crate) files: Option<Vec<FileAST<'a>>>,
+    pub files: Option<Vec<FileAST<'a>>>,
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct FileAST<'a> {
-    pub(crate) path: Vec<&'a str>,
-    pub(crate) length: i64,
+pub struct FileAST<'a> {
+    pub path: Vec<&'a str>,
+    pub length: i64,
 }
 
 impl<'a> TorrentAST<'a> {
-    pub(crate) fn decode(file: &'a [u8]) -> Option<TorrentAST<'a>> {
+    pub fn decode(file: &'a [u8]) -> Option<TorrentAST<'a>> {
         let mut torrent = Bencode::decode(file)?.dict()?;
         let mut info = torrent.remove(&b"info"[..])?.dict()?;
 
@@ -122,7 +122,7 @@ impl<'a> Bencode<'a> {
     /// // consumed an empty dict but there was input left
     /// assert!(Bencode::decode(b"i42e ") == None);
     /// ```
-    pub(crate) fn decode(input: &[u8]) -> Option<Bencode> {
+    pub fn decode(input: &[u8]) -> Option<Bencode> {
         // make sure we consumed the whole input
         let Ok((&[], benc)) = Bencode::parse_benc(input) else {
             return None
@@ -146,7 +146,7 @@ impl<'a> Bencode<'a> {
     ///
     /// assert!(Bencode::hash_dict(&input[..], "info") == expected);
     /// ```
-    pub(crate) fn hash_dict(input: &[u8], key: &str) -> Option<[u8; 20]> {
+    pub fn hash_dict(input: &[u8], key: &str) -> Option<[u8; 20]> {
         // SHA-1 hash includes surrounding 'd' and 'e' tags
         //
         // let input         = "d ... 4:infod ... e ... e";
@@ -185,7 +185,7 @@ impl<'a> Bencode<'a> {
     /// assert!(Bencode::Str("str").str() == Some("str"));
     /// assert!(Bencode::BStr(b"str").str() == None);
     /// ```
-    pub(crate) fn str(self) -> Option<&'a str> {
+    pub fn str(self) -> Option<&'a str> {
         match self {
             Bencode::Str(s) => Some(s),
             _ => None,
@@ -201,7 +201,7 @@ impl<'a> Bencode<'a> {
     /// assert!(Bencode::BStr(b"str").bstr() == Some(&b"str"[..]));
     /// assert!(Bencode::Str("str").bstr() == None);
     /// ```
-    pub(crate) fn bstr(self) -> Option<&'a [u8]> {
+    pub fn bstr(self) -> Option<&'a [u8]> {
         match self {
             Bencode::BStr(s) => Some(s),
             _ => None,
@@ -217,7 +217,7 @@ impl<'a> Bencode<'a> {
     /// assert!(Bencode::Num(32).num() == Some(32));
     /// # assert!(Bencode::Str("str").num() == None);
     /// ```
-    pub(crate) fn num(self) -> Option<i64> {
+    pub fn num(self) -> Option<i64> {
         match self {
             Bencode::Num(n) => Some(n),
             _ => None,
@@ -236,7 +236,7 @@ impl<'a> Bencode<'a> {
     /// assert!(benc.list() == Some(nums()));
     /// # assert!(Bencode::Str("str").list() == None);
     /// ```
-    pub(crate) fn list(self) -> Option<Vec<Bencode<'a>>> {
+    pub fn list(self) -> Option<Vec<Bencode<'a>>> {
         match self {
             Bencode::List(v) => Some(v),
             _ => None,
@@ -256,7 +256,7 @@ impl<'a> Bencode<'a> {
     /// assert!(benc.dict() == Some(dict()));
     /// # assert!(Bencode::Str("str").dict() == None);
     /// ```
-    pub(crate) fn dict(self) -> Option<HashMap<&'a [u8], Bencode<'a>>> {
+    pub fn dict(self) -> Option<HashMap<&'a [u8], Bencode<'a>>> {
         match self {
             Bencode::Dict(d) => Some(d),
             _ => None,
@@ -276,7 +276,7 @@ impl<'a> Bencode<'a> {
     /// assert!(benc().map_list(|b| Some(b)) == Some(list()));
     /// assert!(benc().map_list(|b| b.num()) == None);
     /// ```
-    pub(crate) fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
+    pub fn map_list<U>(self, op: impl Fn(Bencode<'a>) -> Option<U>) -> Option<Vec<U>> {
         self.list()?.into_iter().map(op).try_collect()
     }
 }

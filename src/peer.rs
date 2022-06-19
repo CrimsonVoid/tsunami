@@ -11,7 +11,7 @@ use tokio::{
 use crate::error::{DecodeError, Result};
 
 #[derive(Debug)]
-pub(crate) struct Peer {
+pub struct Peer {
     peer_id: String,
     bitfield: BitBox,
 
@@ -31,7 +31,7 @@ bitflags! {
 impl Peer {
     const MAX_MSG_LENGTH: u32 = 1024 * 16; // 16 KiB
 
-    pub(crate) async fn connect(
+    pub async fn connect(
         addr: impl ToSocketAddrs,
         info_hash: &[u8],
         peer_id: &[u8],
@@ -174,7 +174,7 @@ impl Peer {
     }
 }
 
-pub(crate) enum Message {
+pub enum Message {
     KeepAlive,                          //        | len = 0
     Choke,                              // id = 0 | len = 1
     Unchoke,                            // id = 1 | len = 1
