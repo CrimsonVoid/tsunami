@@ -27,20 +27,19 @@ pub struct InfoAST<'a> {
     pub name: &'a str,
 
     // length and files are mutually exclusive
-    // single file case
-    pub length: Option<i64>,
-    // multi-file case
-    pub files: Option<Vec<FileAST<'a>>>,
+    pub length: Option<i64>,             // single file case
+    pub files: Option<Vec<FileAST<'a>>>, // multi-file case
 }
 
 #[derive(Debug, PartialEq)]
 pub struct FileAST<'a> {
     pub path: Vec<&'a str>,
     pub length: i64,
+    pub attr: Option<&'a str>,
 }
 
 impl<'a> TorrentAST<'a> {
-    pub fn decode(file: &'a [u8]) -> Option<TorrentAST<'a>> {
+    pub fn decode(file: &[u8]) -> Option<TorrentAST> {
         let mut torrent = Bencode::decode(file)?.dict()?;
         let mut info = torrent.remove(&b"info"[..])?.dict()?;
 
@@ -78,23 +77,23 @@ impl<'a> TorrentAST<'a> {
         }
 
         // length and files are mutually exclusive for a valid torrent
-        if self.info.length.is_some() && self.info.files.is_some() {
-            return None;
-        } else if self.info.length.is_none() && self.info.files.is_none() {
-            return None;
-        }
+        match (&self.info.length, &self.info.files) {
+            (Some(_), Some(_)) | (None, None) => return None,
+            _ => (),
+        };
 
         Some(self)
     }
 }
 
-impl<'a> FileAST<'a> {
+impl FileAST<'_> {
     fn new(benc: Bencode) -> Option<FileAST> {
         let mut file = benc.dict()?;
 
         Some(FileAST {
             path: file.remove(&b"path"[..])?.map_list(|p| p.str())?,
             length: file.remove(&b"length"[..])?.num()?,
+            attr: try { file.remove(&b"attr"[..])?.str()? },
         })
     }
 }
@@ -102,8 +101,7 @@ impl<'a> FileAST<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Bencode<'a> {
     Num(i64),
-    Str(&'a str),
-    BStr(&'a [u8]),
+    Str(&'a [u8]),
     List(Vec<Bencode<'a>>),
     Dict(HashMap<&'a [u8], Bencode<'a>>),
 }
@@ -124,7 +122,7 @@ impl<'a> Bencode<'a> {
     /// ```
     pub fn decode(input: &[u8]) -> Option<Bencode> {
         // make sure we consumed the whole input
-        let Ok((&[], benc)) = Bencode::parse_benc(input) else {
+        let ([], benc) = Bencode::parse_benc(input).ok()? else {
             return None
         };
 
@@ -186,10 +184,7 @@ impl<'a> Bencode<'a> {
     /// assert!(Bencode::BStr(b"str").str() == None);
     /// ```
     pub fn str(self) -> Option<&'a str> {
-        match self {
-            Bencode::Str(s) => Some(s),
-            _ => None,
-        }
+        std::str::from_utf8(self.bstr()?).ok()
     }
 
     /// bstr unwraps a [Bencode::BStr] variant
@@ -203,7 +198,7 @@ impl<'a> Bencode<'a> {
     /// ```
     pub fn bstr(self) -> Option<&'a [u8]> {
         match self {
-            Bencode::BStr(s) => Some(s),
+            Bencode::Str(s) => Some(s),
             _ => None,
         }
     }
@@ -270,7 +265,7 @@ impl<'a> Bencode<'a> {
     /// ```ignore
     /// # use tsunami::torrent_ast::Bencode as B;
     ///
-    /// let list = || vec![ B::Num(0), B::Num(1), B::Str("two") ];
+    /// let list = || vec![ B::Num(0), B::Num(1), B::Str(b"two") ];
     /// let benc = || B::List(list());
     ///
     /// assert!(benc().map_list(|b| Some(b)) == Some(list()));
@@ -288,19 +283,11 @@ impl<'a> Bencode<'a> {
 
     fn parse_benc(input: &'a [u8]) -> Parsed<Bencode> {
         alt((
-            map(Self::parse_str, Bencode::wrap_str),
+            map(Self::parse_str, Bencode::Str),
             map(Self::parse_int, Bencode::Num),
             map(Self::parse_list, Bencode::List),
             map(Self::parse_dict, Bencode::Dict),
         ))(input)
-    }
-
-    /// attempts to wrap s as either [Bencode::Str] if s is a valid utf8 string or [Bencode::BStr]
-    fn wrap_str(s: &[u8]) -> Bencode {
-        match std::str::from_utf8(s) {
-            Ok(s) => Bencode::Str(s),
-            Err(_) => Bencode::BStr(s),
-        }
     }
 
     /// parse a valid bencoded string
@@ -342,7 +329,7 @@ impl<'a> Bencode<'a> {
                 )),
                 nchar('e'),
             ),
-            |num: &[u8]| std::str::from_utf8(num).ok()?.parse().ok(),
+            |num| std::str::from_utf8(num).ok()?.parse().ok(),
         )(input)
     }
 
@@ -374,7 +361,7 @@ impl<'a> Bencode<'a> {
 
     // same as parse benc, but doesn't try to parse the resulting str's into Benc nodes
     // unfortunately we have to re-define all of the rules here :(
-    fn parse_benc_no_map(input: &'a [u8]) -> Parsed<&[u8]> {
+    fn parse_benc_no_map(input: &[u8]) -> Parsed<&[u8]> {
         alt((
             Self::parse_str,
             // int
@@ -490,23 +477,23 @@ mod tests {
     fn parse_list() {
         let cases = vec![
             ("le", vec![]),
-            ("li4ei2e2:42e", vec![B::Num(4), B::Num(2), B::Str("42")]),
+            ("li4ei2e2:42e", vec![B::Num(4), B::Num(2), B::Str(b"42")]),
             (
                 "l5:helloi42eli2ei3e2:hid4:listli1ei2ei3ee7:yahallo2::)eed2:hi5:hello3:inti15eee",
                 vec![
-                    B::Str("hello"),
+                    B::Str(b"hello"),
                     B::Num(42),
                     B::List(vec![
                         B::Num(2),
                         B::Num(3),
-                        B::Str("hi"),
+                        B::Str(b"hi"),
                         B::Dict(hashmap! {
                             &b"list"[..]    => B::List(vec![B::Num(1), B::Num(2), B::Num(3)]),
-                            &b"yahallo"[..] => B::Str(":)"),
+                            &b"yahallo"[..] => B::Str(b":)"),
                         }),
                     ]),
                     B::Dict(hashmap! {
-                        &b"hi"[..]  => B::Str("hello"),
+                        &b"hi"[..]  => B::Str(b"hello"),
                         &b"int"[..] => B::Num(15),
                     }),
                 ],
@@ -525,25 +512,25 @@ mod tests {
             ("de", HashMap::new()),
             (
                 "d3:onei1e3:twoi2ee",
-                hashmap!{ &b"one"[..] => B::Num(1), &b"two"[..] => B::Num(2) },
+                hashmap! { &b"one"[..] => B::Num(1), &b"two"[..] => B::Num(2) },
             ),
             (
                 concat!(
-                    "d8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
-                    "\"13:creation datei1234567890e9:httpseedsl31:http://direct.example.com/mock131:http",
-                    "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
-                    "iece lengthi536870912eee"),
+                "d8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
+                "\"13:creation datei1234567890e9:httpseedsl31:http://direct.example.com/mock131:http",
+                "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
+                "iece lengthi536870912eee"),
                 hashmap! {
-                    &b"announce"[..]      => B::Str("http://tracker.example.com:8080/announce"),
-                    &b"comment"[..]       => B::Str("\"Hello mock data\""),
+                    &b"announce"[..]      => B::Str(b"http://tracker.example.com:8080/announce"),
+                    &b"comment"[..]       => B::Str(b"\"Hello mock data\""),
                     &b"creation date"[..] => B::Num(1234567890),
                     &b"httpseeds"[..]     => B::List(vec![
-                        B::Str("http://direct.example.com/mock1"),
-                        B::Str("http://direct.example.com/mock2"),
+                        B::Str(b"http://direct.example.com/mock1"),
+                        B::Str(b"http://direct.example.com/mock2"),
                     ]),
                     &b"info"[..] => B::Dict(hashmap!{
                         &b"length"[..]       => B::Num(562949953421312),
-                        &b"name"[..]         => B::Str("あいえおう"),
+                        &b"name"[..]         => B::Str(b"\xE3\x81\x82\xE3\x81\x84\xE3\x81\x88\xE3\x81\x8A\xE3\x81\x86"),
                         &b"piece length"[..] => B::Num(536870912),
                     }),
                 }
@@ -570,20 +557,20 @@ mod tests {
         let cases = vec![
             (
                 concat!(
-                    "d8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
-                    "\"13:creation datei1234567890e",
-                    // torrent copy
-                    "4:demod",
-                    "8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
-                    "\"13:creation datei1234567890e",
-                    "9:httpseedsl31:http://direct.example.com/mock131:http",
-                    "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
-                    "iece lengthi536870912ee",
-                    "e",
-                    // torrent copy
-                    "9:httpseedsl31:http://direct.example.com/mock131:http",
-                    "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
-                    "iece lengthi536870912eee"
+                "d8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
+                "\"13:creation datei1234567890e",
+                // torrent copy
+                "4:demod",
+                "8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
+                "\"13:creation datei1234567890e",
+                "9:httpseedsl31:http://direct.example.com/mock131:http",
+                "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
+                "iece lengthi536870912ee",
+                "e",
+                // torrent copy
+                "9:httpseedsl31:http://direct.example.com/mock131:http",
+                "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
+                "iece lengthi536870912eee"
                 ).as_bytes(),
                 [
                     0x83, 0x55, 0x11, 0x80, 0x8c, 0xd6, 0x54, 0x2c, 0x1b, 0xc5,
@@ -627,22 +614,26 @@ mod tests {
 
     fn print_benc(v: Bencode, spaces: usize) {
         match v {
-            Bencode::Num(_) | Bencode::Str(_) => {
+            Bencode::Num(_) => {
                 print!("{v:?},")
             }
-            Bencode::BStr(b) => {
-                if b.len() >= 20 {
-                    let b = &b[..=20];
-                    print!("BStr({b:?} ..),");
+            Bencode::Str(b) => {
+                if let Ok(s) = std::str::from_utf8(b) {
+                    print!("{s:?}");
                 } else {
-                    print!("BStr({b:?}),");
+                    if b.len() >= 20 {
+                        let b = &b[..=20];
+                        print!("{b:?}");
+                    } else {
+                        print!("{b:?}");
+                    }
                 }
             }
             Bencode::List(l) => {
-                if l.len() < 4 {
-                    print!("{l:?},");
-                    return;
-                }
+                // if l.len() < 4 {
+                //     print!("{l:?},");
+                //     return;
+                // }
 
                 println!("List([");
                 for node in l {
@@ -657,9 +648,22 @@ mod tests {
                 println!("{{");
 
                 for (k, v) in d {
-                    let k = String::from_utf8_lossy(k);
                     (0..spaces).for_each(|_| print!(" "));
-                    print!("{k:?} => ");
+
+                    if let Ok(s) = std::str::from_utf8(k) {
+                        print!("{s:?}: ");
+                    } else {
+                        if k.len() >= 20 {
+                            let k = &k[..=20];
+                            print!("{k:?}: ");
+                        } else {
+                            print!("{k:?}: ");
+                        }
+                    }
+
+                    // let k = String::from_utf8_lossy(k);
+                    // print!("{k:?} => ");
+                    // println!("`dbg: {v:?}`");
                     print_benc(v, spaces + 2);
                     println!();
                 }

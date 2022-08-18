@@ -12,7 +12,7 @@ use crate::error::{DecodeError, Result};
 
 #[derive(Debug)]
 pub struct Peer {
-    peer_id: String,
+    peer_id: Box<str>,
     bitfield: BitBox,
 
     status: Status,
@@ -29,7 +29,7 @@ bitflags! {
 }
 
 impl Peer {
-    const MAX_MSG_LENGTH: u32 = 1024 * 16; // 16 KiB
+    const MAX_MSG_LENGTH: u32 = 16 * 1024; // 16 KiB
 
     pub async fn connect(
         addr: impl ToSocketAddrs,
@@ -94,7 +94,7 @@ impl Peer {
             // peer id
             buf.fill(0);
             rx.read_exact(&mut buf).await?;
-            String::from_utf8(buf).or(err)
+            String::from_utf8(buf).map(|s| s.into()).or(err)
         };
 
         let (_, peer_id) = futures::try_join!(send, recv).ok()?;
@@ -227,7 +227,7 @@ mod test {
         let _l = TcpListener::bind(addr).await.unwrap();
 
         let mut p = Peer {
-            peer_id: "".to_string(),
+            peer_id: "".into(),
             bitfield: Default::default(),
             status: Status { bits: 0 },
             conn: BufStream::new(TcpStream::connect(addr).await.unwrap()),

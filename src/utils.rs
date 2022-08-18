@@ -1,14 +1,15 @@
 use std::{env::temp_dir, path::PathBuf};
 
+use dirs::{download_dir as downld_dir, home_dir};
 use hyper::{body, body::Bytes, client::HttpConnector, Client};
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 
 use crate::error::Result;
 
+pub type Slice<T> = Box<[T]>;
+
 pub async fn get_body(url: &str) -> Result<Bytes> {
-    lazy_static! {
-        static ref CLIENT: Client<HttpConnector> = Client::new();
-    }
+    static CLIENT: Lazy<Client<HttpConnector>> = Lazy::new(|| Client::new());
 
     let uri = url.parse()?;
     let resp = CLIENT.get(uri).await?;
@@ -22,7 +23,5 @@ pub fn valid_path(p: &str) -> bool {
 }
 
 pub fn download_dir() -> PathBuf {
-    dirs::download_dir()
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(temp_dir)
+    downld_dir().or_else(home_dir).unwrap_or_else(temp_dir)
 }

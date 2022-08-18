@@ -8,18 +8,19 @@ use std::{
 };
 
 use byteorder::{ByteOrder, BE};
-use chrono::{DateTime, Duration, Utc};
 use hyper::body::Bytes;
 use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
+use time::{Duration, OffsetDateTime};
 
 use crate::{
     error::{Error, Result},
     peer::Peer,
     torrent_ast::{Bencode, InfoAST, TorrentAST},
-    utils,
+    utils::{self, Slice},
 };
 
 pub type Sha1Hash = [u8; 20];
+pub type Trackers = Slice<String>;
 
 /// Torrent keeps a torrents metadata in a more workable format
 #[derive(Debug)]
@@ -31,8 +32,8 @@ pub struct Torrent {
     // this will always contain at least one tracker (`announce_list[0][0]`)
     //
     // example: vec![ vec!["tracker1", "tr2"], vec!["backup1"] ]
-    trackers: Vec<Vec<String>>,
-    next_announce: DateTime<Utc>,
+    trackers: Slice<Trackers>,
+    next_announce: OffsetDateTime,
 
     peer_id: Arc<String>,
     bytes_left: u64,
@@ -42,10 +43,10 @@ pub struct Torrent {
 
 #[derive(Debug, PartialEq)]
 struct Info {
-    files: Vec<File>,
+    files: Slice<File>,
 
     piece_length: u32,
-    pieces: Vec<Sha1Hash>,
+    pieces: Slice<Sha1Hash>,
     info_hash: Sha1Hash,
 
     private: bool,
@@ -58,6 +59,15 @@ struct File {
     // default: OS_DOWNLOAD_DIR | HOME + base_path
     file: PathBuf,
     length: u64,
+    attr: Option<Attr>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Attr {
+    Padding,
+    Executable,
+    Hidden,
+    SymLink,
 }
 
 impl Torrent {
@@ -72,17 +82,18 @@ impl Torrent {
             .map(|p| p.try_into().unwrap())
             .collect();
 
-        let trackers = if let Some(trs) = torrent.announce_list {
-            let mut rng = SmallRng::seed_from_u64(Utc::now().timestamp_millis() as u64);
+        let trackers = if let Some(mut trs) = torrent.announce_list {
+            let seed = OffsetDateTime::now_utc().unix_timestamp() as u64;
+            let mut rng = SmallRng::seed_from_u64(seed);
 
-            trs.into_iter()
-                .map(|mut tr| {
+            trs.iter_mut()
+                .map(|tr| {
                     tr.shuffle(&mut rng);
-                    tr.into_iter().map(String::from).collect()
+                    tr.into_iter().map(|s| String::from(*s)).collect()
                 })
                 .collect()
         } else {
-            vec![vec![torrent.announce.into()]]
+            [[torrent.announce.into()].into()].into()
         };
 
         let files = Self::build_files(&info, base_dir)?;
@@ -102,7 +113,7 @@ impl Torrent {
             peers: HashMap::new(),
 
             trackers,
-            next_announce: Utc::now(),
+            next_announce: OffsetDateTime::now_utc(),
 
             peer_id,
             bytes_left: total_bytes,
@@ -123,11 +134,11 @@ impl Torrent {
         Some(())
     }
 
-    fn build_files(info: &InfoAST, base_dir: &Path) -> Option<Vec<File>> {
+    fn build_files(info: &InfoAST, base_dir: &Path) -> Option<Slice<File>> {
         // single file case, info.name is filename
         if let Some(len) = info.length {
             let file = File::new(len, base_dir, &[info.name][..])?;
-            return Some(vec![file]);
+            return Some([file].into());
         }
 
         let base_dir = {
@@ -143,7 +154,7 @@ impl Torrent {
     }
 
     async fn refresh_peers(&mut self) -> Result<()> {
-        if self.next_announce <= Utc::now() && !self.peers.is_empty() {
+        if self.next_announce <= OffsetDateTime::now_utc() && !self.peers.is_empty() {
             return Ok(());
         }
 
@@ -158,9 +169,9 @@ impl Torrent {
         //     [ [a1, a2], [b3, b1, b2], [c1] ]
         //
         // See BEP-12 for more details
-        for outer in 0..self.trackers.len() {
-            for inner in 0..self.trackers[outer].len() {
-                let tracker = &self.trackers[outer][inner];
+        for group in 0..self.trackers.len() {
+            for index in 0..self.trackers[group].len() {
+                let tracker = &self.trackers[group][index];
                 self.build_tracker_url(tracker, &mut url_buf);
 
                 // request peers from tracker
@@ -171,11 +182,11 @@ impl Torrent {
 
                 // make current tracker the first we try next time (in its local inner group, maintaining
                 // outer tracker group order)
-                self.trackers[outer][..=inner].rotate_right(1);
+                self.trackers[group][..=index].rotate_right(1);
 
                 // set next tracker update interval, min 5m
                 let interval = Duration::seconds(interval.clamp(300, i64::MAX as u64) as i64);
-                self.next_announce = Utc::now() + interval;
+                self.next_announce = OffsetDateTime::now_utc() + interval;
 
                 // update our list of peers
                 for peer in peers {
@@ -228,9 +239,9 @@ impl Torrent {
         // parse response into a (interval, sockaddr's) pair
         let parse_resp = try {
             let interval = tracker.remove(&b"interval"[..])?.num()?.try_into().ok()?;
-
             let peers = tracker.remove(&b"peers"[..])?;
-            let sock_addrs = if let Bencode::BStr(peers) = peers {
+
+            let sock_addrs = if let Bencode::Str(peers) = peers {
                 peers
                     .chunks(6)
                     .map(|host| {
@@ -280,6 +291,7 @@ impl File {
         Some(File {
             file: file_path,
             length: length.try_into().ok()?,
+            attr: None,
         })
     }
 }
@@ -291,30 +303,34 @@ mod tests {
         sync::Arc,
     };
 
-    use chrono::Utc;
+    use time::OffsetDateTime;
 
     use crate::torrent::{File, Info, Torrent};
 
     #[test]
     fn new() {
         let tor_gen = |base: &Path, prefix: &str| Torrent {
-            trackers: vec![
-                vec!["http://tracker.example.com".into()],
-                vec!["http://tracker2.example.com".into()],
-            ],
+            trackers: [
+                ["http://tracker.example.com".into()].into(),
+                ["http://tracker2.example.com".into()].into(),
+            ]
+            .into(),
             info: Info {
                 piece_length: 32768,
-                pieces: vec![[
+                pieces: [[
                     0, 72, 105, 249, 236, 50, 141, 28, 177, 230, 77, 80, 106, 67, 249, 35, 207,
                     173, 235, 151,
-                ]],
+                ]]
+                .into(),
                 private: true,
-                files: vec![File {
+                files: [File {
                     file: PathBuf::from_iter(
                         [base, Path::new(prefix), Path::new("file.txt")].iter(),
                     ),
                     length: 10,
-                }],
+                    attr: None,
+                }]
+                .into(),
                 info_hash: if prefix == "" {
                     [
                         11, 5, 171, 161, 242, 160, 178, 230, 220, 146, 241, 219, 17, 67, 62, 95,
@@ -331,7 +347,7 @@ mod tests {
             bytes_left: 0,
             uploaded: 0,
             downloaded: 0,
-            next_announce: Utc::now(),
+            next_announce: OffsetDateTime::now_utc(),
             peers: Default::default(),
         };
 
@@ -340,10 +356,11 @@ mod tests {
             (&include_bytes!("test_data/mock_file.torrent")[..], ""),
         ];
 
+        let peer_id: Arc<String> = Arc::new("-TS0001-|testClient|".into());
+
         for (file, dir_name) in test_files {
             let base_dir = PathBuf::from("/foo");
-            let torrent =
-                Torrent::new(file, Arc::new("-TS0001-|testClient|".into()), &base_dir).unwrap();
+            let torrent = Torrent::new(file, peer_id.clone(), &base_dir).unwrap();
             let expected = tor_gen(&base_dir, dir_name);
 
             assert_eq!(torrent.trackers, expected.trackers);
