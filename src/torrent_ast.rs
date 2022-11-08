@@ -5,7 +5,7 @@ use nom::{
     bytes::complete::tag,
     character::complete::{char as nchar, digit0, digit1, one_of},
     combinator::{map, map_opt, opt, recognize},
-    multi::{length_data, many0},
+    multi::{length_data, many0_count},
     sequence::{delimited, terminated, tuple},
 };
 use ring::digest;
@@ -151,27 +151,22 @@ impl<'a> Bencode<'a> {
         // let (start, end)  =     start -> [     ] <- end
         //
         // sha1.sum( input[start..=end] )
+        let mut parse_kv_pair = tuple((Self::parse_str, Self::parse_benc_no_map));
 
-        map(
-            delimited(
-                tag("d"),
-                many0(tuple((Bencode::parse_str, Bencode::parse_benc_no_map))),
-                tag("e"),
-            ),
-            |kv_pairs| {
-                kv_pairs
-                    .iter()
-                    .find(|(k, _)| *k == key.as_bytes())
-                    .map(|(_, v)| {
-                        digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, v)
-                            .as_ref()
-                            .try_into()
-                            .unwrap()
-                    })
-            },
-        )(input)
-        .ok()?
-        .1
+        let mut input = nchar::<_, nom::error::Error<_>>('d')(input).ok()?.0;
+
+        while let Ok((input_left, (k, val))) = parse_kv_pair(input) {
+            if k == key.as_bytes() {
+                return digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, val)
+                    .as_ref()
+                    .try_into()
+                    .ok();
+            }
+
+            input = input_left;
+        }
+
+        None
     }
 
     /// str unwraps a [Bencode::Str] variant
@@ -336,7 +331,17 @@ impl<'a> Bencode<'a> {
     // parse a valid bencoded list
     // pseudo format: l(Benc)*e
     fn parse_list(input: &'a [u8]) -> Parsed<Vec<Bencode>> {
-        delimited(nchar('l'), many0(Self::parse_benc), nchar('e'))(input)
+        let mut input = nchar('l')(input)?.0;
+
+        let mut list = vec![];
+        while let Ok((input_left, benc)) = Self::parse_benc(input) {
+            input = input_left;
+            list.push(benc);
+        }
+
+        let input = nchar('e')(input)?.0;
+
+        Ok((input, list))
     }
 
     // parse a valid bencoded dict
@@ -344,19 +349,28 @@ impl<'a> Bencode<'a> {
     //
     // pseudo format: d(Str Benc)*e
     fn parse_dict(input: &'a [u8]) -> Parsed<HashMap<&[u8], Bencode>> {
-        map_opt(
-            delimited(
-                nchar('d'),
-                many0(tuple((Self::parse_str, Self::parse_benc))),
-                nchar('e'),
-            ),
-            |kv_pairs: Vec<(&[u8], Bencode)>| {
-                kv_pairs
-                    .windows(2)
-                    .all(|p| p[0].0 < p[1].0)
-                    .then(|| kv_pairs.into_iter().collect())
-            },
-        )(input)
+        use nom::{
+            error::{Error, ErrorKind},
+            Err,
+        };
+
+        let mut parse_kv_pair = tuple((Self::parse_str, Self::parse_benc));
+
+        let mut input = nchar('d')(input)?.0;
+        let (mut dict, mut last_key) = (HashMap::new(), &b""[..]);
+
+        while let Ok((input_left, (key, val))) = parse_kv_pair(input) {
+            if last_key > key {
+                return Err(Err::Error(Error::new(input, ErrorKind::MapOpt)));
+            }
+            (input, last_key) = (input_left, key);
+
+            dict.insert(key, val);
+        }
+
+        let input = nchar('e')(input)?.0;
+
+        Ok((input, dict))
     }
 
     // same as parse benc, but doesn't try to parse the resulting str's into Benc nodes
@@ -376,13 +390,13 @@ impl<'a> Bencode<'a> {
             // list
             recognize(delimited(
                 nchar('l'),
-                many0(Self::parse_benc_no_map),
+                many0_count(Self::parse_benc_no_map),
                 nchar('e'),
             )),
             // dict
             recognize(delimited(
                 nchar('d'),
-                many0(tuple((Self::parse_str, Self::parse_benc_no_map))),
+                many0_count(tuple((Self::parse_str, Self::parse_benc_no_map))),
                 nchar('e'),
             )),
         ))(input)
@@ -391,7 +405,7 @@ impl<'a> Bencode<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{cmp::min, collections::HashMap};
 
     use super::Bencode as B;
     use crate::torrent_ast::Bencode;
@@ -621,12 +635,8 @@ mod tests {
                 if let Ok(s) = std::str::from_utf8(b) {
                     print!("{s:?}");
                 } else {
-                    if b.len() >= 20 {
-                        let b = &b[..=20];
-                        print!("{b:?}");
-                    } else {
-                        print!("{b:?}");
-                    }
+                    let trunc = b.split_at(min(20, b.len())).0;
+                    print!("{trunc:?}");
                 }
             }
             Bencode::List(l) => {
@@ -653,12 +663,8 @@ mod tests {
                     if let Ok(s) = std::str::from_utf8(k) {
                         print!("{s:?}: ");
                     } else {
-                        if k.len() >= 20 {
-                            let k = &k[..=20];
-                            print!("{k:?}: ");
-                        } else {
-                            print!("{k:?}: ");
-                        }
+                        let trunc = k.split_at(min(20, k.len())).0;
+                        print!("{trunc:?}");
                     }
 
                     // let k = String::from_utf8_lossy(k);

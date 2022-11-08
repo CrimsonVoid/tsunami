@@ -2,7 +2,6 @@ use std::{io, io::IoSlice};
 
 use bitflags::bitflags;
 use bitvec::prelude::{bitbox, BitBox, Lsb0};
-use byteorder::{ByteOrder, BE};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufStream},
     net::{TcpStream, ToSocketAddrs},
@@ -97,7 +96,7 @@ impl Peer {
             String::from_utf8(buf).map(|s| s.into()).or(err)
         };
 
-        let (_, peer_id) = futures::try_join!(send, recv).ok()?;
+        let (_, peer_id) = tokio::try_join!(send, recv).ok()?;
 
         Some(Peer {
             status: Status::SELF_CHOKED | Status::PEER_CHOKED,
@@ -123,7 +122,7 @@ impl Peer {
             (4, 5) => true,
             (5, n) if n == bitfield_len => true,
             (6 | 8, 13) => true,
-            (7, n) if n >= 9 && n < Self::MAX_MSG_LENGTH => true,
+            (7, n) if (9..Self::MAX_MSG_LENGTH).contains(&n) => true,
             (9, 3) => true,
             _ => false,
         }
@@ -144,29 +143,41 @@ impl Peer {
         let mut buf = vec![0; length as usize - 4].into_boxed_slice();
         self.conn.read_exact(&mut buf).await?;
 
+        let mut idx = 0;
+
+        let read_u32 = |idx: &mut usize| {
+            *idx += 4;
+            u32::from_be_bytes(buf[*idx - 4..*idx].try_into().unwrap())
+        };
+
+        let read_u16 = |idx: &mut usize| {
+            *idx += 2;
+            u16::from_be_bytes(buf[*idx - 2..*idx].try_into().unwrap())
+        };
+
         let msg = match msg_id {
             0 => Message::Choke,
             1 => Message::Unchoke,
             2 => Message::Interested,
             3 => Message::NotInterested,
-            4 => Message::Have(BE::read_u32(&buf[..])),
+            4 => Message::Have(read_u32(&mut idx)),
             5 => Message::Bitfield(buf),
             6 => Message::Request {
-                index: BE::read_u32(&buf[..]),
-                begin: BE::read_u32(&buf[..]),
-                length: BE::read_u32(&buf[..]),
+                index: read_u32(&mut idx),
+                begin: read_u32(&mut idx),
+                length: read_u32(&mut idx),
             },
             7 => Message::Piece {
-                index: BE::read_u32(&buf[..]),
-                begin: BE::read_u32(&buf[..]),
+                index: read_u32(&mut idx),
+                begin: read_u32(&mut idx),
                 block: buf,
             },
             8 => Message::Cancel {
-                index: BE::read_u32(&buf[..]),
-                begin: BE::read_u32(&buf[..]),
-                length: BE::read_u32(&buf[..]),
+                index: read_u32(&mut idx),
+                begin: read_u32(&mut idx),
+                length: read_u32(&mut idx),
             },
-            9 => Message::Port(BE::read_u16(&buf[..])),
+            9 => Message::Port(read_u16(&mut idx)),
             _ => return Err(DecodeError::MessageId(msg_id, length)),
         };
 

@@ -7,7 +7,6 @@ use std::{
     sync::Arc,
 };
 
-use byteorder::{ByteOrder, BE};
 use hyper::body::Bytes;
 use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
 use time::{Duration, OffsetDateTime};
@@ -89,7 +88,7 @@ impl Torrent {
             trs.iter_mut()
                 .map(|tr| {
                     tr.shuffle(&mut rng);
-                    tr.into_iter().map(|s| String::from(*s)).collect()
+                    tr.iter_mut().map(|s| String::from(*s)).collect()
                 })
                 .collect()
         } else {
@@ -142,7 +141,7 @@ impl Torrent {
         }
 
         let base_dir = {
-            let d = utils::valid_path(info.name).then(|| info.name)?;
+            let d = utils::valid_path(info.name).then_some(info.name)?;
             base_dir.join(Path::new(d))
         };
 
@@ -200,19 +199,21 @@ impl Torrent {
         Err(Error::NoTrackerAvailable)
     }
 
-    fn build_tracker_url(&self, tracker: &str, mut buffer: &mut String) {
+    fn build_tracker_url(&self, tracker: &str, buffer: &mut String) {
         const HEXES: &[u8; 16] = b"0123456789ABCDEF";
         buffer.clear();
 
         let mut info_hash = String::with_capacity(60);
         for b in self.info.info_hash {
-            info_hash.push('%');
-            info_hash.push(HEXES[b as usize >> 4] as char);
-            info_hash.push(HEXES[b as usize & 15] as char);
+            info_hash.extend([
+                '%',
+                HEXES[b as usize >> 4] as char,
+                HEXES[b as usize & 15] as char,
+            ]);
         }
 
         let _ = write!(
-            &mut buffer,
+            buffer,
             "{tracker}?info_hash={}&peer_id={}&port={}&downloaded={}&uploaded={}&compact={}&left={}",
             info_hash,
             self.peer_id,
@@ -242,26 +243,28 @@ impl Torrent {
             let peers = tracker.remove(&b"peers"[..])?;
 
             let sock_addrs = if let Bencode::Str(peers) = peers {
-                peers
-                    .chunks(6)
-                    .map(|host| {
-                        let ipv4 = Ipv4Addr::new(host[0], host[1], host[2], host[3]);
-                        let port = BE::read_u16(&host[4..]);
+                let mut addrs = Vec::with_capacity(peers.len() / 6);
 
-                        SocketAddrV4::new(ipv4, port)
-                    })
-                    .collect()
+                for host in peers.chunks(6) {
+                    let ipv4 = Ipv4Addr::new(host[0], host[1], host[2], host[3]);
+                    let port = u16::from_be_bytes(host[4..].try_into().unwrap());
+
+                    addrs.push(SocketAddrV4::new(ipv4, port));
+                }
+
+                addrs
             } else if let Bencode::List(peers) = peers {
-                peers
-                    .into_iter()
-                    .map(|peer| {
-                        let mut peer = peer.dict()?;
-                        let ip = peer.remove(&b"ip"[..])?.str()?.parse().ok()?;
-                        let port = peer.remove(&b"port"[..])?.str()?.parse().ok()?;
+                let mut addrs = Vec::with_capacity(peers.len());
 
-                        Some(SocketAddrV4::new(ip, port))
-                    })
-                    .try_collect()?
+                for peer in peers {
+                    let mut peer = peer.dict()?;
+                    let ip = peer.remove(&b"ip"[..])?.str()?.parse().ok()?;
+                    let port = peer.remove(&b"port"[..])?.str()?.parse().ok()?;
+
+                    addrs.push(SocketAddrV4::new(ip, port));
+                }
+
+                addrs
             } else {
                 return Err(Error::InvalidTrackerResp(None));
             };
