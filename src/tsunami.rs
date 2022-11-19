@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 use crate::torrent::Torrent;
 
 /// Tsunami bittorrent client
-pub struct Tsunami {
+pub(crate) struct Tsunami {
     peer_id: Arc<String>,
     base_dir: PathBuf,
     torrents: Vec<Torrent>,

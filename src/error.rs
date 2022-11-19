@@ -1,6 +1,8 @@
-use std::{error::Error as StdError, fmt, io, result::Result as StdResult};
+use std::{error as err, fmt, io, result::Result as StdResult};
 
 use hyper::http::uri::InvalidUri;
+
+use crate::utils::enum_conv;
 
 pub type Result<O, E = Error> = StdResult<O, E>;
 
@@ -11,6 +13,9 @@ pub enum Error {
     InvalidTrackerUri(InvalidUri),
     Hyper(hyper::Error),
 }
+
+enum_conv!(Error::InvalidTrackerUri, InvalidUri);
+enum_conv!(Error::Hyper, hyper::Error);
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -23,8 +28,8 @@ impl fmt::Display for Error {
     }
 }
 
-impl StdError for Error {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+impl err::Error for Error {
+    fn source(&self) -> Option<&(dyn err::Error + 'static)> {
         match self {
             Error::InvalidTrackerResp(_) | Error::NoTrackerAvailable => None,
             Error::InvalidTrackerUri(e) => Some(e),
@@ -33,23 +38,13 @@ impl StdError for Error {
     }
 }
 
-impl From<hyper::Error> for Error {
-    fn from(err: hyper::Error) -> Self {
-        Error::Hyper(err)
-    }
-}
-
-impl From<InvalidUri> for Error {
-    fn from(err: InvalidUri) -> Self {
-        Error::InvalidTrackerUri(err)
-    }
-}
-
 #[derive(Debug)]
 pub enum DecodeError {
     Io(io::Error),
     MessageId(u8, u32),
 }
+
+enum_conv!(DecodeError::Io, io::Error);
 
 impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -62,17 +57,11 @@ impl fmt::Display for DecodeError {
     }
 }
 
-impl StdError for DecodeError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+impl err::Error for DecodeError {
+    fn source(&self) -> Option<&(dyn err::Error + 'static)> {
         match self {
             DecodeError::Io(e) => Some(e),
             DecodeError::MessageId(_, _) => None,
         }
-    }
-}
-
-impl From<io::Error> for DecodeError {
-    fn from(err: io::Error) -> Self {
-        DecodeError::Io(err)
     }
 }

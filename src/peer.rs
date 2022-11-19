@@ -1,6 +1,5 @@
 use std::{io, io::IoSlice};
 
-use bitflags::bitflags;
 use bitvec::prelude::{bitbox, BitBox, Lsb0};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufStream},
@@ -10,21 +9,21 @@ use tokio::{
 use crate::error::{DecodeError, Result};
 
 #[derive(Debug)]
-pub struct Peer {
-    peer_id: Box<str>,
-    bitfield: BitBox,
+pub(crate) struct Peer {
+    pub peer_id: Box<str>,
+    pub bitfield: BitBox,
 
-    status: Status,
-    conn: BufStream<TcpStream>,
+    pub status: status::Bits,
+    pub conn: BufStream<TcpStream>,
 }
 
-bitflags! {
-    struct Status: u8 {
-        const SELF_CHOKED = 1 << 0;
-        const SELF_INTERESTED = 1 << 1;
-        const PEER_CHOKED = 1 << 2;
-        const PEER_INTERESTED = 1 << 3;
-    }
+pub(crate) mod status {
+    pub type Bits = u8;
+
+    pub const SELF_CHOKED: Bits = 1 << 0;
+    pub const SELF_INTERESTED: Bits = 1 << 1;
+    pub const PEER_CHOKED: Bits = 1 << 2;
+    pub const PEER_INTERESTED: Bits = 1 << 3;
 }
 
 impl Peer {
@@ -70,6 +69,8 @@ impl Peer {
         };
 
         // read a bittorrent greeting
+        // allow attr bc the people working on rust can't see thee bigger picture
+        #[allow(irrefutable_let_patterns)]
         let recv = async {
             const BT_PREFIX: &[u8; 20] = b"\x13Bittorrent Protocol";
             let err = Err(io::Error::from(io::ErrorKind::Other));
@@ -99,7 +100,7 @@ impl Peer {
         let (_, peer_id) = tokio::try_join!(send, recv).ok()?;
 
         Some(Peer {
-            status: Status::SELF_CHOKED | Status::PEER_CHOKED,
+            status: status::SELF_CHOKED | status::PEER_CHOKED,
             bitfield: bitbox![usize, Lsb0; 0; total_pieces],
             conn: BufStream::new(conn),
             peer_id,
@@ -107,11 +108,19 @@ impl Peer {
     }
 
     fn peer_choked(&mut self, status: bool) {
-        self.status.set(Status::PEER_CHOKED, status);
+        if status {
+            self.status |= status::PEER_CHOKED;
+        } else {
+            self.status ^= status::PEER_CHOKED;
+        }
     }
 
     fn peer_interested(&mut self, status: bool) {
-        self.status.set(Status::PEER_INTERESTED, status);
+        if status {
+            self.status |= status::PEER_INTERESTED;
+        } else {
+            self.status ^= status::PEER_INTERESTED;
+        }
     }
 
     fn check_msg_len(&self, id: u8, len: u32) -> bool {
@@ -128,7 +137,7 @@ impl Peer {
         }
     }
 
-    async fn decode_message(&mut self) -> Result<Message, DecodeError> {
+    pub async fn decode_message(&mut self) -> Result<Message, DecodeError> {
         let length = self.conn.read_u32().await?;
         if length == 0 {
             return Ok(Message::KeepAlive);
@@ -212,48 +221,4 @@ pub enum Message {
         length: u32,
     },
     Port(/* listen port */ u16), // id = 9 | len = 3
-}
-
-#[cfg(test)]
-mod test {
-    use std::mem::{size_of, size_of_val};
-
-    use tokio::{
-        io::BufStream,
-        net::{TcpListener, TcpStream},
-    };
-
-    use crate::peer::{Peer, Status};
-
-    struct MsgData {
-        length: u32,
-        msg_id: u8,
-        buf: [u8; 13],
-        block: Box<[u8]>,
-    }
-
-    #[tokio::test]
-    async fn arr_size() {
-        let addr = "127.0.0.1:34567";
-        let _l = TcpListener::bind(addr).await.unwrap();
-
-        let mut p = Peer {
-            peer_id: "".into(),
-            bitfield: Default::default(),
-            status: Status { bits: 0 },
-            conn: BufStream::new(TcpStream::connect(addr).await.unwrap()),
-        };
-
-        println!(
-            "connect: {} bytes",
-            size_of_val(&Peer::connect(addr, &b""[..], &b""[..], 0))
-        );
-
-        println!(
-            "decode_message baseline is {:?} bytes",
-            size_of::<MsgData>(),
-        );
-
-        println!("decode_message: {} bytes", size_of_val(&p.decode_message()));
-    }
 }
