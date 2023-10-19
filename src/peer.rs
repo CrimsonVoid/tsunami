@@ -17,13 +17,14 @@ pub(crate) struct Peer {
     pub conn: BufStream<TcpStream>,
 }
 
+#[allow(non_upper_case_globals)]
 pub(crate) mod status {
     pub type Bits = u8;
 
-    pub const SELF_CHOKED: Bits = 1 << 0;
-    pub const SELF_INTERESTED: Bits = 1 << 1;
-    pub const PEER_CHOKED: Bits = 1 << 2;
-    pub const PEER_INTERESTED: Bits = 1 << 3;
+    pub const SelfChoked: Bits = 1 << 0;
+    pub const SelfInterested: Bits = 1 << 1;
+    pub const PeerChoked: Bits = 1 << 2;
+    pub const PeerInterested: Bits = 1 << 3;
 }
 
 impl Peer {
@@ -100,7 +101,7 @@ impl Peer {
         let (_, peer_id) = tokio::try_join!(send, recv).ok()?;
 
         Some(Peer {
-            status: status::SELF_CHOKED | status::PEER_CHOKED,
+            status: status::SelfChoked | status::PeerChoked,
             bitfield: bitbox![usize, Lsb0; 0; total_pieces],
             conn: BufStream::new(conn),
             peer_id,
@@ -109,17 +110,17 @@ impl Peer {
 
     fn peer_choked(&mut self, status: bool) {
         if status {
-            self.status |= status::PEER_CHOKED;
+            self.status |= status::PeerChoked;
         } else {
-            self.status ^= status::PEER_CHOKED;
+            self.status ^= status::PeerChoked;
         }
     }
 
     fn peer_interested(&mut self, status: bool) {
         if status {
-            self.status |= status::PEER_INTERESTED;
+            self.status |= status::PeerInterested;
         } else {
-            self.status ^= status::PEER_INTERESTED;
+            self.status ^= status::PeerInterested;
         }
     }
 

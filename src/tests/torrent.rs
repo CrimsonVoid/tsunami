@@ -5,7 +5,10 @@ use std::{
 
 use time::OffsetDateTime;
 
-use crate::torrent::{File, Info, Torrent};
+use crate::{
+    tests::test_data,
+    torrent::{File, Info, Torrent},
+};
 
 #[test]
 fn new() {
@@ -18,8 +21,8 @@ fn new() {
         info: Info {
             piece_length: 32768,
             pieces: [[
-                0, 72, 105, 249, 236, 50, 141, 28, 177, 230, 77, 80, 106, 67, 249, 35, 207, 173,
-                235, 151,
+                0, 72, 105, 249, 236, 50, 141, 28, 177, 230, 77, 80, 106, 67, 249, 35, 207, 173, 235,
+                151,
             ]]
             .into(),
             private: true,
@@ -31,13 +34,13 @@ fn new() {
             .into(),
             info_hash: if prefix == "" {
                 [
-                    11, 5, 171, 161, 242, 160, 178, 230, 220, 146, 241, 219, 17, 67, 62, 95, 58,
-                    130, 11, 173,
+                    11, 5, 171, 161, 242, 160, 178, 230, 220, 146, 241, 219, 17, 67, 62, 95, 58, 130,
+                    11, 173,
                 ]
             } else {
                 [
-                    116, 83, 104, 101, 231, 122, 204, 114, 242, 152, 196, 136, 195, 44, 49, 171,
-                    155, 150, 152, 177,
+                    116, 83, 104, 101, 231, 122, 204, 114, 242, 152, 196, 136, 195, 44, 49, 171, 155,
+                    150, 152, 177,
                 ]
             },
         },
@@ -50,8 +53,9 @@ fn new() {
     };
 
     let test_files = [
-        (&include_bytes!("./test_data/mock_dir.torrent")[..], "mock"),
-        (&include_bytes!("./test_data/mock_file.torrent")[..], ""),
+        //
+        (test_data::MOCK_DIR, "mock"),
+        (test_data::MOCK_FILE, ""),
     ];
 
     let peer_id: Arc<String> = Arc::new("-TS0001-|testClient|".into());
@@ -69,7 +73,7 @@ fn new() {
 
 // #[tokio::test]
 // async fn get_peers() {
-//     let data = include_bytes!("test_data/debian.torrent");
+//     let data = test_data::DEBIAN_FILE;
 //     let base_dir = env::temp_dir();
 //
 //     let mut tsunami = Tsunami::new(base_dir).unwrap();

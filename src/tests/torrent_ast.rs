@@ -1,6 +1,9 @@
 use std::{cmp::min, collections::HashMap};
 
-use crate::torrent_ast::{Bencode as B, Bencode};
+use crate::{
+    tests::test_data,
+    torrent_ast::{Bencode as B, Bencode},
+};
 
 macro_rules! hashmap {
     ($($k:expr => $v:expr),*) => ({
@@ -122,10 +125,11 @@ fn parse_dict() {
         ),
         (
             concat!(
-            "d8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
-            "\"13:creation datei1234567890e9:httpseedsl31:http://direct.example.com/mock131:http",
-            "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
-            "iece lengthi536870912eee"),
+                "d8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
+                "\"13:creation datei1234567890e9:httpseedsl31:http://direct.example.com/mock131:http",
+                "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
+                "iece lengthi536870912eee"
+            ),
             hashmap! {
                 &b"announce"[..]      => B::Str(b"http://tracker.example.com:8080/announce"),
                 &b"comment"[..]       => B::Str(b"\"Hello mock data\""),
@@ -163,20 +167,20 @@ fn info_hash() {
     let cases = vec![
         (
             concat!(
-            "d8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
-            "\"13:creation datei1234567890e",
-            // torrent copy
-            "4:demod",
-            "8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
-            "\"13:creation datei1234567890e",
-            "9:httpseedsl31:http://direct.example.com/mock131:http",
-            "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
-            "iece lengthi536870912ee",
-            "e",
-            // torrent copy
-            "9:httpseedsl31:http://direct.example.com/mock131:http",
-            "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
-            "iece lengthi536870912eee"
+                "d8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
+                "\"13:creation datei1234567890e",
+                // torrent copy
+                "4:demod",
+                "8:announce40:http://tracker.example.com:8080/announce7:comment17:\"Hello mock data",
+                "\"13:creation datei1234567890e",
+                "9:httpseedsl31:http://direct.example.com/mock131:http",
+                "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
+                "iece lengthi536870912ee",
+                "e",
+                // torrent copy
+                "9:httpseedsl31:http://direct.example.com/mock131:http",
+                "://direct.example.com/mock2e4:infod6:lengthi562949953421312e4:name15:あいえおう12:p",
+                "iece lengthi536870912eee"
             )
             .as_bytes(),
             [
@@ -185,14 +189,14 @@ fn info_hash() {
             ],
         ),
         (
-            include_bytes!("./test_data/mock_dir.torrent"),
+            test_data::MOCK_DIR,
             [
                 0x74, 0x53, 0x68, 0x65, 0xe7, 0x7a, 0xcc, 0x72, 0xf2, 0x98, 0xc4, 0x88, 0xc3, 0x2c,
                 0x31, 0xab, 0x9b, 0x96, 0x98, 0xb1,
             ],
         ),
         (
-            include_bytes!("./test_data/mock_file.torrent"),
+            test_data::MOCK_FILE,
             [
                 0x0b, 0x05, 0xab, 0xa1, 0xf2, 0xa0, 0xb2, 0xe6, 0xdc, 0x92, 0xf1, 0xdb, 0x11, 0x43,
                 0x3e, 0x5f, 0x3a, 0x82, 0x0b, 0xad,
@@ -209,8 +213,9 @@ fn info_hash() {
 #[test]
 fn decode_bt_test() {
     let test_files = [
-        &include_bytes!("test_data/bittorrent-v2-test.torrent")[..],
-        &include_bytes!("test_data/bittorrent-v2-hybrid-test.torrent")[..],
+        //
+        test_data::BTV2_TEST,
+        test_data::BTV2_HYBRID_TEST,
     ];
 
     for file in test_files {
