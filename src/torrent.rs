@@ -232,7 +232,7 @@ impl Torrent {
         }
 
         // parse response into a (interval, sockaddr's) pair
-        let parse_resp = try {
+        let parse_resp: Option<_> = try {
             let interval = tracker.remove(&b"interval"[..])?.num()?.try_into().ok()?;
             let peers = tracker.remove(&b"peers"[..])?;
 
@@ -264,7 +264,7 @@ impl Torrent {
             };
 
             (interval, sock_addrs)
-        }: Option<_>;
+        };
 
         parse_resp.ok_or(Error::InvalidTrackerResp(None))
     }

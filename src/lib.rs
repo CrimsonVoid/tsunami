@@ -1,10 +1,4 @@
-#![feature(
-    let_chains,
-    try_blocks,
-    type_ascription,
-    io_slice_advance,
-    iterator_try_collect
-)]
+#![feature(let_chains, try_blocks, io_slice_advance, iterator_try_collect)]
 
 mod error;
 mod torrent_ast;

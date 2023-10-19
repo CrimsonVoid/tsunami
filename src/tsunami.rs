@@ -22,7 +22,7 @@ impl Tsunami {
             rng.sample_iter(&Alphanumeric)
                 .take(12)
                 .map(char::from)
-                .collect(): String
+                .collect::<String>()
         ));
 
         if !base_dir.has_root() {
