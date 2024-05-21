@@ -1,29 +1,19 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::from_utf8_unchecked};
 
-use nom::{
-    branch::alt,
-    bytes::complete::tag,
-    character::complete::{char as nchar, digit0, digit1, one_of},
-    combinator::{map, map_opt, opt, recognize},
-    multi::{length_data, many0_count},
-    sequence::{delimited, terminated, tuple},
-};
 use ring::digest;
-
-use crate::utils::enum_conv;
 
 // TorrentAST is a structural representation of a torrent file; fields map over almost identically,
 // with dict's being represented as sub-structs
 #[derive(Debug, PartialEq)]
 pub struct TorrentAST<'a> {
     pub announce: &'a str,
-    pub announce_list: Option<Vec<Vec<&'a str>>>,
+    pub announceList: Option<Vec<Vec<&'a str>>>,
     pub info: InfoAST<'a>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct InfoAST<'a> {
-    pub piece_length: i64,
+    pub pieceLength: i64,
     pub pieces: &'a [u8],
     pub private: Option<i64>,
     pub name: &'a str,
@@ -47,7 +37,7 @@ impl<'a> TorrentAST<'a> {
 
         TorrentAST {
             announce: torrent.remove(&b"announce"[..])?.str()?,
-            announce_list: try {
+            announceList: try {
                 torrent
                     .remove(&b"announce-list"[..])?
                     .map_list(|l| l.map_list(Bencode::str))?
@@ -55,7 +45,7 @@ impl<'a> TorrentAST<'a> {
             info: InfoAST {
                 name: info.remove(&b"name"[..])?.str()?,
                 pieces: info.remove(&b"pieces"[..])?.bstr()?,
-                piece_length: info.remove(&b"piece length"[..])?.num()?,
+                pieceLength: info.remove(&b"piece length"[..])?.num()?,
 
                 length: try { info.remove(&b"length"[..])?.num()? },
                 files: try { info.remove(&b"files"[..])?.map_list(FileAST::new)? },
@@ -108,11 +98,6 @@ pub enum Bencode<'a> {
     Dict(HashMap<&'a [u8], Bencode<'a>>),
 }
 
-enum_conv!(Bencode<'a>::Num, i64);
-enum_conv!(Bencode<'a>::Str, &'a [u8]);
-enum_conv!(Bencode<'a>::List, Vec<Bencode<'a>>);
-enum_conv!(Bencode<'a>::Dict, HashMap<&'a [u8], Bencode<'a>>);
-
 impl<'a> Bencode<'a> {
     /// decode a bencoded value consuming all of input in the process
     ///
@@ -128,10 +113,15 @@ impl<'a> Bencode<'a> {
     /// assert!(Bencode::decode(b"i42e ") == None);
     /// ```
     pub fn decode(input: &[u8]) -> Option<Bencode> {
-        // make sure we consumed the whole input
-        let ([], benc) = Bencode::parse_benc(input).ok()? else {
-            return None
+        let mut tok = BencTokenizer {
+            input,
+            buildCollections: true,
         };
+        let benc = tok.nextToken().ok()?;
+
+        if !tok.input.is_empty() {
+            return None;
+        }
 
         Some(benc)
     }
@@ -158,22 +148,30 @@ impl<'a> Bencode<'a> {
         // let (start, end)  =     start -> [     ] <- end
         //
         // sha1.sum( input[start..=end] )
-        let mut parse_kv_pair = tuple((Self::parse_str, Self::parse_benc_no_map));
+        if input.first() != Some(&b'd') {
+            return None;
+        }
+        let mut tok = BencTokenizer {
+            input: &input[1..],
+            buildCollections: false,
+        };
 
-        let mut input = nchar::<_, nom::error::Error<_>>('d')(input).ok()?.0;
+        loop {
+            if tok.parseStr().ok()? == key.as_bytes() {
+                // find length of dict, since nextToken advances input we have to get length in
+                // a roundabout way.
+                let dict = tok.input;
+                tok.nextToken().ok()?;
+                let dictLen = dict.len() - tok.input.len(); // whole slice - slice after nextToken() = bytes read
 
-        while let Ok((input_left, (k, val))) = parse_kv_pair(input) {
-            if k == key.as_bytes() {
-                return digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, val)
+                return digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, &dict[..dictLen])
                     .as_ref()
                     .try_into()
                     .ok();
             }
 
-            input = input_left;
+            tok.nextToken().ok()?;
         }
-
-        None
     }
 
     /// str unwraps a [Bencode::Str] variant
@@ -182,8 +180,7 @@ impl<'a> Bencode<'a> {
     /// ```ignore
     /// # use tsunami::torrent_ast::Bencode;
     ///
-    /// assert!(Bencode::Str("str").str() == Some("str"));
-    /// assert!(Bencode::BStr(b"str").str() == None);
+    /// assert!(Bencode::Str(b"str").str() == Some("str"));
     /// ```
     pub fn str(self) -> Option<&'a str> {
         std::str::from_utf8(self.bstr()?).ok()
@@ -195,11 +192,11 @@ impl<'a> Bencode<'a> {
     /// ```ignore
     /// # use tsunami::torrent_ast::Bencode;
     ///
-    /// assert!(Bencode::BStr(b"str").bstr() == Some(&b"str"[..]));
-    /// assert!(Bencode::Str("str").bstr() == None);
+    /// assert!(Bencode::Str(b"str").bstr() == Some(&b"str"[..]));
     /// ```
     pub fn bstr(self) -> Option<&'a [u8]> {
-        self.try_into().ok()
+        let Bencode::Str(s) = self else { return None };
+        Some(s)
     }
 
     /// num unwraps a [Bencode::Num] variant
@@ -209,10 +206,11 @@ impl<'a> Bencode<'a> {
     /// # use tsunami::torrent_ast::Bencode;
     ///
     /// assert!(Bencode::Num(32).num() == Some(32));
-    /// # assert!(Bencode::Str("str").num() == None);
+    /// # assert!(Bencode::Str(b"str").num() == None);
     /// ```
     pub fn num(self) -> Option<i64> {
-        self.try_into().ok()
+        let Bencode::Num(n) = self else { return None };
+        Some(n)
     }
 
     /// list unwraps a [Bencode::List] variant
@@ -225,10 +223,11 @@ impl<'a> Bencode<'a> {
     /// let benc = Bencode::List(nums());
     ///
     /// assert!(benc.list() == Some(nums()));
-    /// # assert!(Bencode::Str("str").list() == None);
+    /// # assert!(Bencode::Str(b"str").list() == None);
     /// ```
     pub fn list(self) -> Option<Vec<Bencode<'a>>> {
-        self.try_into().ok()
+        let Bencode::List(l) = self else { return None };
+        Some(l)
     }
 
     /// dict unwraps a [Bencode::Dict] variant
@@ -238,14 +237,15 @@ impl<'a> Bencode<'a> {
     /// # use std::collections::HashMap;
     /// # use tsunami::torrent_ast::Bencode;
     ///
-    /// let dict = || { HashMap::from([ ("num", Bencode::Num(32)) ]) };
+    /// let dict = || { HashMap::from([ (&b"num"[..], Bencode::Num(32)) ]) };
     /// let benc = Bencode::Dict(dict());
     ///
     /// assert!(benc.dict() == Some(dict()));
-    /// # assert!(Bencode::Str("str").dict() == None);
+    /// # assert!(Bencode::Str(b"str").dict() == None);
     /// ```
     pub fn dict(self) -> Option<HashMap<&'a [u8], Bencode<'a>>> {
-        self.try_into().ok()
+        let Bencode::Dict(d) = self else { return None };
+        Some(d)
     }
 
     /// map_list calls op with every element of a [Bencode::List], returning None if any call to
@@ -266,18 +266,53 @@ impl<'a> Bencode<'a> {
     }
 }
 
-type Parsed<'a, T> = nom::IResult<&'a [u8], T>;
+#[derive(Debug, PartialEq)]
+pub enum TokError {
+    BencInvalidIdent,
 
-impl<'a> Bencode<'a> {
-    // nom bencode parsers
+    StrInvalidIdent,
+    StrUnexpectedEOF,
+    StrLenEOF,
+    StrLenParseErr,
+    StrEndOverflow,
+    StrTooShort,
+    StrInvalidSep,
 
-    fn parse_benc(input: &'a [u8]) -> Parsed<Bencode> {
-        alt((
-            map(Self::parse_str, Bencode::Str),
-            map(Self::parse_int, Bencode::Num),
-            map(Self::parse_list, Bencode::List),
-            map(Self::parse_dict, Bencode::Dict),
-        ))(input)
+    IntInvalidEncoding,
+    IntInvalidIdent,
+    IntUnexpectedEOF,
+    IntLenEOF,
+    IntExpectedEnd,
+    IntLenParseErr,
+
+    ListInvalidIdent,
+    ListUnexpectedEOF,
+    ListExpectedEnd,
+    ListValParseErr,
+
+    DictInvalidIdent,
+    DictUnexpectedEOF,
+    DictExpectedStrKey,
+    DictKeysUnsorted,
+    DictValParseErr,
+    DictExpectedEnd,
+}
+
+pub struct BencTokenizer<'a> {
+    pub input: &'a [u8],
+    // disables building list and dicts. returned Vec/HashMap will always be empty
+    pub buildCollections: bool,
+}
+
+impl<'a> BencTokenizer<'a> {
+    fn nextToken(&mut self) -> Result<Bencode<'a>, TokError> {
+        Ok(match self.input {
+            [b'0'..=b'9', ..] => Bencode::Str(self.parseStr()?),
+            [b'i', ..] => Bencode::Num(self.parseInt()?),
+            [b'l', ..] => Bencode::List(self.parseList()?),
+            [b'd', ..] => Bencode::Dict(self.parseDict()?),
+            _ => return Err(TokError::BencInvalidIdent),
+        })
     }
 
     /// parse a valid bencoded string
@@ -285,17 +320,61 @@ impl<'a> Bencode<'a> {
     /// a bencoded string is a base-ten length followed by a colon (:) and then the string
     ///
     /// # Examples
-    /// ``` ignore
-    /// # use tsunami::torrent_ast::Bencode;
-    /// assert!(Bencode::parse_str(b"5:hello").unwrap().1 == &b"hello"[..]);
+    /// ```ignore
+    /// # use tsunami::torrent_ast::BencTokenizer;
+    /// let mut tok = BencTokenizer::new("5:hello");
+    /// assert!(tok.parseStr().unwrap() == &b"hello"[..]);
     /// ```
-    fn parse_str(input: &[u8]) -> Parsed<&[u8]> {
-        length_data(terminated(
-            map_opt(digit1, |n: &[u8]| {
-                std::str::from_utf8(n).ok()?.parse::<usize>().ok()
-            }),
-            nchar(':'),
-        ))(input)
+    pub fn parseStr(&mut self) -> Result<&'a [u8], TokError> {
+        // check len starts with a non-zero digit to make parsing len simpler later
+        match self.input {
+            [b'1'..=b'9', ..] => (),
+            [b'0', b':', rest @ ..] => {
+                // empty fast path
+                self.input = rest;
+                return Ok(b"");
+            }
+            [_, ..] => return Err(TokError::StrInvalidIdent),
+            [] => return Err(TokError::StrUnexpectedEOF),
+        }
+
+        // benc string: nnnnnnnn:cccccccccccccccccc
+        //   len as u23 ^------^ ^--start    end--^
+        let (start, end) = {
+            let digitsEnd = self
+                .input
+                .iter()
+                .position(|c| !(*c >= b'0' && *c <= b'9'))
+                .ok_or(TokError::StrLenEOF)?;
+
+            // limit strs to 2^32 bytes
+            // SAFETY: we know input[..digitsEnd] only contains ASCII chars due to predicate fn
+            //         used in position above
+            // SAFETY: `as usize` should not overflow since we only support 32/64 bit systems
+            let len = unsafe { from_utf8_unchecked(&self.input[..digitsEnd]) }
+                .parse::<u32>()
+                .map_err(|_| TokError::StrLenParseErr)? as usize;
+
+            let start = digitsEnd + 1; // digitsEnd can be at most 10 chars (u32::MAX = 4294967295)
+            let end = start.saturating_add(len);
+            if end == usize::MAX {
+                return Err(TokError::StrEndOverflow);
+            }
+
+            (start, end)
+        };
+
+        if self.input.len() < end {
+            return Err(TokError::StrTooShort);
+        }
+        if self.input[start - 1] != b':' {
+            return Err(TokError::StrInvalidSep);
+        }
+
+        let bstr = &self.input[start..end];
+        self.input = &self.input[end..];
+
+        Ok(bstr)
     }
 
     /// parse a valid bencoded int
@@ -309,91 +388,118 @@ impl<'a> Bencode<'a> {
     ///   - if a number starts with zero, no digits can follow it. the next tag must be "e"
     ///   - all valid, non-zero numbers must start with a non-zero digit and be
     ///     followed by zero or more digits. regex: (-?[1-9][0-9]+)
-    fn parse_int(input: &[u8]) -> Parsed<i64> {
-        map_opt(
-            delimited(
-                nchar('i'),
-                alt((
-                    tag("0"),
-                    recognize(tuple((opt(nchar('-')), one_of("123456789"), digit0))),
-                )),
-                nchar('e'),
-            ),
-            |num| std::str::from_utf8(num).ok()?.parse().ok(),
-        )(input)
+    pub fn parseInt(&mut self) -> Result<i64, TokError> {
+        // skip leading negative sign and check if num starts with 1..=9 to simplify parsing later
+        let skip = match self.input {
+            [b'i', b'-', b'1'..=b'9', ..] => 2,
+            [b'i', b'1'..=b'9', ..] => 1,
+            [b'i', b'0', b'e', rest @ ..] => {
+                // zero fast path
+                self.input = rest;
+                return Ok(0);
+            }
+            [b'i', ..] => return Err(TokError::IntInvalidEncoding),
+            [_, ..] => return Err(TokError::IntInvalidIdent),
+            [] => return Err(TokError::IntUnexpectedEOF),
+        };
+
+        let digitsEnd = self.input[skip..]
+            .iter()
+            .position(|c| !(*c >= b'0' && *c <= b'9'))
+            .ok_or(TokError::IntLenEOF)?;
+
+        let rest = match &self.input[digitsEnd + skip..] {
+            [b'e', rest @ ..] => rest,
+            _ => return Err(TokError::IntExpectedEnd),
+        };
+
+        // SAFETY: we know input[1..digitsEnd+skip] only contains ASCII chars due to predicate fn
+        //         used in position above
+        let num = unsafe { from_utf8_unchecked(&self.input[1..digitsEnd + skip]) }
+            .parse::<i64>()
+            .map_err(|_| TokError::IntLenParseErr)?;
+
+        self.input = rest;
+
+        Ok(num)
     }
 
     // parse a valid bencoded list
     // pseudo format: l(Benc)*e
-    fn parse_list(input: &'a [u8]) -> Parsed<Vec<Bencode>> {
-        let mut input = nchar('l')(input)?.0;
-
+    pub fn parseList(&mut self) -> Result<Vec<Bencode<'a>>, TokError> {
         let mut list = vec![];
-        while let Ok((input_left, benc)) = Self::parse_benc(input) {
-            input = input_left;
-            list.push(benc);
+
+        match self.input {
+            [b'l', b'e', rest @ ..] => {
+                // empty fast path
+                self.input = rest;
+                return Ok(list);
+            }
+            [b'l', ..] => self.input = &self.input[1..],
+            [_, ..] => return Err(TokError::ListInvalidIdent),
+            [] => return Err(TokError::ListUnexpectedEOF),
         }
 
-        let input = nchar('e')(input)?.0;
+        loop {
+            match self.nextToken() {
+                Ok(tok) if self.buildCollections => list.push(tok),
+                Ok(_) => (),
+                Err(TokError::BencInvalidIdent) => break,
+                Err(_) => return Err(TokError::ListValParseErr),
+            }
+        }
 
-        Ok((input, list))
+        match self.input {
+            [b'e', rest @ ..] => self.input = rest,
+            _ => return Err(TokError::ListExpectedEnd),
+        }
+
+        Ok(list)
     }
 
     // parse a valid bencoded dict
     // dict keys must appear in sorted order
     //
     // pseudo format: d(Str Benc)*e
-    fn parse_dict(input: &'a [u8]) -> Parsed<HashMap<&[u8], Bencode>> {
-        use nom::{
-            error::{Error, ErrorKind},
-            Err,
-        };
+    pub fn parseDict(&mut self) -> Result<HashMap<&'a [u8], Bencode<'a>>, TokError> {
+        let mut dict = HashMap::new();
+        let mut prevKey = &self.input[..0];
 
-        let mut parse_kv_pair = tuple((Self::parse_str, Self::parse_benc));
-
-        let mut input = nchar('d')(input)?.0;
-        let (mut dict, mut last_key) = (HashMap::new(), &b""[..]);
-
-        while let Ok((input_left, (key, val))) = parse_kv_pair(input) {
-            if last_key > key {
-                return Err(Err::Error(Error::new(input, ErrorKind::MapOpt)));
+        match self.input {
+            [b'd', b'e', rest @ ..] => {
+                // empty fast path
+                self.input = rest;
+                return Ok(dict);
             }
-            (input, last_key) = (input_left, key);
-
-            dict.insert(key, val);
+            [b'd', ..] => self.input = &self.input[1..],
+            [_, ..] => return Err(TokError::DictInvalidIdent),
+            [] => return Err(TokError::DictUnexpectedEOF),
         }
 
-        let input = nchar('e')(input)?.0;
+        loop {
+            let k = match self.parseStr() {
+                Ok(k) => k,
+                Err(TokError::StrInvalidIdent) => break,
+                Err(_) => return Err(TokError::DictExpectedStrKey),
+            };
 
-        Ok((input, dict))
-    }
+            if k < prevKey {
+                return Err(TokError::DictKeysUnsorted);
+            }
+            prevKey = k;
 
-    // same as parse benc, but doesn't try to parse the resulting str's into Benc nodes
-    // unfortunately we have to re-define all of the rules here :(
-    fn parse_benc_no_map(input: &[u8]) -> Parsed<&[u8]> {
-        alt((
-            Self::parse_str,
-            // int
-            recognize(delimited(
-                nchar('i'),
-                alt((
-                    tag("0"),
-                    recognize(tuple((opt(nchar('-')), one_of("123456789"), digit0))),
-                )),
-                nchar('e'),
-            )),
-            // list
-            recognize(delimited(
-                nchar('l'),
-                many0_count(Self::parse_benc_no_map),
-                nchar('e'),
-            )),
-            // dict
-            recognize(delimited(
-                nchar('d'),
-                many0_count(tuple((Self::parse_str, Self::parse_benc_no_map))),
-                nchar('e'),
-            )),
-        ))(input)
+            match self.nextToken() {
+                Ok(v) if self.buildCollections => dict.insert(k, v),
+                Ok(_) => None,
+                Err(_) => return Err(TokError::DictValParseErr),
+            };
+        }
+
+        match self.input {
+            [b'e', rest @ ..] => self.input = rest,
+            _ => return Err(TokError::DictExpectedEnd),
+        }
+
+        Ok(dict)
     }
 }

@@ -1,7 +1,4 @@
-use std::{
-    default::Default,
-    mem::{size_of, size_of_val},
-};
+use std::mem::{size_of, size_of_val};
 
 use tokio::{
     io::BufStream,

@@ -81,7 +81,7 @@ impl Torrent {
             .map(|p| p.try_into().unwrap())
             .collect();
 
-        let trackers = if let Some(mut trs) = torrent.announce_list {
+        let trackers = if let Some(mut trs) = torrent.announceList {
             let seed = OffsetDateTime::now_utc().unix_timestamp() as u64;
             let mut rng = SmallRng::seed_from_u64(seed);
 
@@ -104,7 +104,7 @@ impl Torrent {
         Some(Torrent {
             info: Info {
                 files,
-                piece_length: info.piece_length.try_into().ok()?,
+                piece_length: info.pieceLength.try_into().ok()?,
                 pieces,
                 info_hash: Bencode::hash_dict(buf, "info")?,
                 private: info.private == Some(1),
@@ -222,7 +222,7 @@ impl Torrent {
     fn parse_tracker_resp(resp: Bytes) -> Result<(u64, Vec<SocketAddrV4>)> {
         // todo: propagate error
         let Some(mut tracker) = (try { Bencode::decode(&resp)?.dict()? }) else {
-            return Err(Error::InvalidTrackerResp(None))
+            return Err(Error::InvalidTrackerResp(None));
         };
 
         // TODO - avoid allocs

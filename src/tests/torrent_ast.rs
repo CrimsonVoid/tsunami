@@ -2,7 +2,7 @@ use std::{cmp::min, collections::HashMap};
 
 use crate::{
     tests::test_data,
-    torrent_ast::{Bencode as B, Bencode},
+    torrent_ast::{BencTokenizer, Bencode as B, Bencode, TokError},
 };
 
 macro_rules! hashmap {
@@ -11,6 +11,13 @@ macro_rules! hashmap {
     });
 
     ($($k:expr => $v:expr),+,) => (hashmap!($($k => $v),+));
+}
+
+fn tokr(input: &str) -> BencTokenizer {
+    BencTokenizer {
+        input: input.as_bytes(),
+        buildCollections: true,
+    }
 }
 
 #[test]
@@ -26,26 +33,32 @@ fn parse_int() {
         ("i-9223372036854775808e", i64::MIN),
     ];
 
-    for (input, expected) in cases {
-        let actual = B::decode(input.as_bytes()).unwrap().num().unwrap();
-        assert_eq!(actual, expected)
+    for (input, exp) in cases {
+        let actual = tokr(input).parseInt();
+        assert_eq!(actual, Ok(exp), "input: {input}");
     }
 }
 
 #[test]
 fn parse_int_fail() {
+    use TokError::*;
+
     let cases = vec![
-        "e",
-        "i-0e",
-        "i00e",
-        "i05e",
-        "i18446744073709551615e",
-        "i-0e",
-        "i03e",
+        ("", IntUnexpectedEOF),
+        ("e", IntInvalidIdent),
+        ("i-0e", IntInvalidEncoding),
+        ("i00e", IntInvalidEncoding),
+        ("i05e", IntInvalidEncoding),
+        ("i-0e", IntInvalidEncoding),
+        ("i03e", IntInvalidEncoding),
+        ("i123", IntLenEOF),
+        ("i123E", IntExpectedEnd),
+        ("i9223372036854775808e", IntLenParseErr),
     ];
 
-    for input in cases {
-        assert!(B::decode(input.as_bytes()).is_none());
+    for (input, err) in cases {
+        let actual = tokr(input).parseInt();
+        assert_eq!(actual, Err(err), "input: {input}");
     }
 }
 
@@ -57,28 +70,42 @@ fn parse_str() {
         ("7:yahallo", "yahallo"),
         ("15:こんにちわ", "こんにちわ"),
         ("7:\"hello\"", "\"hello\""),
-        ("11:hellohello1", "hellohello1"),
-        ("02:hi", "hi"),
+        ("11:hello:hello", "hello:hello"),
     ];
 
-    for (input, expected) in cases {
-        let actual = B::decode(input.as_bytes()).unwrap().str().unwrap();
-        assert_eq!(actual, expected)
+    for (input, exp) in cases {
+        let actual = tokr(input).parseStr();
+        assert_eq!(actual, Ok(exp.as_bytes()), "input: {}", input)
     }
 }
 
 #[test]
 fn parse_str_fail() {
+    use TokError::*;
+
     let cases = vec![
         // comment to prevent rustfmt from collapsing cases into a single line :/
-        "6:hello",
-        "a5:hallo",
-        "a",
-        "18446744073709551616:overflow",
+        ("", StrUnexpectedEOF),
+        ("02:hi", StrInvalidIdent),
+        ("6:hello", StrTooShort),
+        ("a5:hallo", StrInvalidIdent),
+        ("123", StrLenEOF),
+        ("2_hi", StrInvalidSep),
+        ("4294967296:u32_MAX + 1", StrLenParseErr),
+        ("18446744073709551615:u64_MAX", StrLenParseErr),
+        (
+            "4294967295:u32_MAX",
+            if cfg!(target_pointer_width = "32") {
+                StrEndOverflow
+            } else {
+                StrTooShort
+            },
+        ),
     ];
 
-    for input in cases {
-        assert!(B::decode(input.as_bytes()).is_none());
+    for (input, err) in cases {
+        let actual = tokr(input).parseStr();
+        assert_eq!(actual, Err(err), "input: {}", input);
     }
 }
 
@@ -109,9 +136,9 @@ fn parse_list() {
         ),
     ];
 
-    for (input, expected) in cases {
-        let actual = B::decode(input.as_bytes()).unwrap().list().unwrap();
-        assert_eq!(actual, expected)
+    for (input, exp) in cases {
+        let actual = tokr(input).parseList();
+        assert_eq!(actual, Ok(exp), "input: {input}");
     }
 }
 
@@ -147,18 +174,24 @@ fn parse_dict() {
         ),
     ];
 
-    for (input, expected) in cases {
-        let actual = B::decode(input.as_bytes()).unwrap().dict().unwrap();
-        assert_eq!(actual, expected)
+    for (input, exp) in cases {
+        let actual = tokr(input).parseDict();
+        assert_eq!(actual, Ok(exp), "input: {input}");
     }
 }
 
 #[test]
 fn parse_dict_fail() {
-    let cases = vec!["d2:hi5:hello1:ai32ee"];
+    use TokError::*;
 
-    for input in cases {
-        assert!(B::decode(input.as_bytes()).is_none());
+    let cases = vec![
+        //
+        ("d2:hi5:hello1:ai32ee", DictKeysUnsorted),
+    ];
+
+    for (input, exp) in cases {
+        let actual = tokr(input).parseDict();
+        assert_eq!(actual, Err(exp), "input: {input}");
     }
 }
 
@@ -222,6 +255,19 @@ fn decode_bt_test() {
         let torrent = B::decode(file).unwrap();
         print_benc(torrent, 2);
     }
+}
+
+extern crate test;
+use test::Bencher;
+
+#[bench]
+fn bench_decode_bt_v2(b: &mut Bencher) {
+    b.iter(|| B::decode(test_data::BTV2_TEST));
+}
+
+#[bench]
+fn bench_decode_bt_v2_hybrid(b: &mut Bencher) {
+    b.iter(|| B::decode(test_data::BTV2_HYBRID_TEST));
 }
 
 fn print_benc(v: Bencode, spaces: usize) {
