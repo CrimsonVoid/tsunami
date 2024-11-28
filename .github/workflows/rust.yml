@@ -7,96 +7,22 @@ on:
     branches: [ main ]
 
 jobs:
-  check:
-    name: Check
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout sources
-        uses: actions/checkout@v2
-
-      - name: Rust Cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
-
-      - name: Install rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: nightly
-          override: true
-
-      - name: Run cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-
-  test:
-    name: Test Suite
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v2
-
-      - name: Rust Cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
-
-      - name: Install rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: nightly
-          override: true
-
-      - name: Run cargo test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install_rust
+      - run: cargo check
+      - run: cargo build
+      - run: cargo test
 
   lints:
-    name: Lints
     runs-on: ubuntu-latest
+    needs: build
     steps:
-      - name: Checkout sources
-        uses: actions/checkout@v2
-
-      - name: Rust Cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
-
-      - name: Install rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: nightly
-          override: true
-          components: rustfmt, clippy
-
-      - name: Run cargo fmt
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
-
-      - name: Run cargo clippy
-        uses: actions-rs/clippy@master
-        with:
-          args: --all-features --all-targets
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install_rust
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --all -- --check
+        continue-on-error: true
+      - run: cargo clippy

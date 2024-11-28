@@ -1,0 +1,26 @@
+name: Install Rust
+
+inputs:
+  cache:
+    default: true
+
+runs:
+  using: composite
+  steps:
+    - run: rustup toolchain install nightly --profile minimal --no-self-update
+      shell: bash
+    - run: rustup default nightly
+      shell: bash
+    - run: cargo generate-lockfile
+      shell: bash
+    - uses: actions/cache@v4
+      if: ${{ inputs.cache == 'true' }}
+      with:
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
