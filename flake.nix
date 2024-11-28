@@ -25,7 +25,11 @@
           default = pkgs.mkShell {
             name = "tsunami";
 
-            buildInputs = with pkgs; [ rust-bin.nightly.latest.default ];
+            buildInputs = with pkgs; [
+              rust-bin.nightly.latest.default
+              pkg-config
+              openssl
+            ];
           };
         });
 

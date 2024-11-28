@@ -7,8 +7,9 @@ use std::{
     sync::Arc,
 };
 
-use hyper::body::Bytes;
+use bytes::Bytes;
 use rand::{SeedableRng, rngs::SmallRng, seq::SliceRandom};
+use reqwest::Client;
 use time::{Duration, OffsetDateTime};
 
 use crate::{
@@ -158,6 +159,7 @@ impl Torrent {
         }
 
         let mut url_buf = String::new();
+        let client = Client::new();
 
         // find the first available tracker we can reach and move it the the front of its own list.
         //
@@ -174,7 +176,7 @@ impl Torrent {
                 self.build_tracker_url(tracker, &mut url_buf);
 
                 // request peers from tracker
-                let body = utils::get_body(&url_buf).await?;
+                let body = utils::get_body(&client, &url_buf).await?;
                 let Ok((interval, peers)) = Self::parse_tracker_resp(body) else {
                     continue;
                 };

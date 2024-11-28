@@ -1,7 +1,5 @@
 use std::{error as err, fmt, io, result::Result as StdResult};
 
-use hyper::http::uri::InvalidUri;
-
 use crate::utils::enum_conv;
 
 pub type Result<O, E = Error> = StdResult<O, E>;
@@ -10,20 +8,17 @@ pub type Result<O, E = Error> = StdResult<O, E>;
 pub enum Error {
     InvalidTrackerResp(Option<String>),
     NoTrackerAvailable,
-    InvalidTrackerUri(InvalidUri),
-    Hyper(hyper::Error),
+    Reqwest(reqwest::Error),
 }
 
-enum_conv!(Error::InvalidTrackerUri, InvalidUri);
-enum_conv!(Error::Hyper, hyper::Error);
+enum_conv!(Error::Reqwest, reqwest::Error);
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::InvalidTrackerResp(_) => f.write_str("tracker sent an invalid response"),
             Error::NoTrackerAvailable => f.write_str("exhausted all available trackers"),
-            Error::InvalidTrackerUri(e) => f.write_fmt(format_args!("invalid tracker uri {e}")),
-            Error::Hyper(e) => f.write_fmt(format_args!("hyper error {e}")),
+            Error::Reqwest(e) => f.write_fmt(format_args!("reqwest error {e}")),
         }
     }
 }
@@ -32,8 +27,7 @@ impl err::Error for Error {
     fn source(&self) -> Option<&(dyn err::Error + 'static)> {
         match self {
             Error::InvalidTrackerResp(_) | Error::NoTrackerAvailable => None,
-            Error::InvalidTrackerUri(e) => Some(e),
-            Error::Hyper(e) => Some(e),
+            Error::Reqwest(e) => Some(e),
         }
     }
 }

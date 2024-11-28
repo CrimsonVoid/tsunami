@@ -7,14 +7,14 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dirs = "5.0"
-once_cell = { version = "1.19", default-features = false }
 bitvec = { version = "1.0", default-features = false, features = ["alloc"] }
-sha1 = { version = "0.10", default-features = false }
+bytes = { version = "1.9.0", default-features = false }
+dirs = "5.0"
 rand = { version = "0.8", default-features = false, features = ["small_rng"] }
+reqwest = { version = "0.12", default-features = false }
+sha1 = { version = "0.10", default-features = false }
 time = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1.41", default-features = false, features = ["net", "io-util", "macros"] }
-hyper = { version = "0.14", default-features = false, features = ["client", "http1", "tcp"] }
 
 [dev-dependencies]
 tokio = { version = "1.41", default-features = false, features = ["macros"] }
