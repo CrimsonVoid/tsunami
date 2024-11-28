@@ -8,7 +8,7 @@ use std::{
 };
 
 use hyper::body::Bytes;
-use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
+use rand::{SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use time::{Duration, OffsetDateTime};
 
 use crate::{
@@ -278,7 +278,7 @@ impl File {
 
         // todo: os specific clean_path fns
         let parts = paths.iter().filter(|p| utils::valid_path(p)).map(Path::new);
-        let file_path = PathBuf::from_iter(once(torrent_dir).into_iter().chain(parts));
+        let file_path = PathBuf::from_iter(once(torrent_dir).chain(parts));
 
         // parts were empty or all path segments were filtered out
         if file_path.ends_with(torrent_dir) {

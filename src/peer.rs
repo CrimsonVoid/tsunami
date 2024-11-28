@@ -1,6 +1,6 @@
 use std::{io, io::IoSlice};
 
-use bitvec::prelude::{bitbox, BitBox, Lsb0};
+use bitvec::prelude::{BitBox, Lsb0, bitbox};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufStream},
     net::{TcpStream, ToSocketAddrs},
@@ -78,17 +78,23 @@ impl Peer {
             let mut buf = vec![0; 20];
 
             // protocol prefix
-            if let _ = rx.read_exact(&mut buf).await? && buf != BT_PREFIX {
+            if let _ = rx.read_exact(&mut buf).await?
+                && buf != BT_PREFIX
+            {
                 return err;
             }
 
             // extension flags (no extensions currently supported)
-            if let _ = rx.read_exact(&mut buf[..8]).await? && buf[..8] != [0; 8] {
+            if let _ = rx.read_exact(&mut buf[..8]).await?
+                && buf[..8] != [0; 8]
+            {
                 return err;
             }
 
             // info_hash
-            if let _ = rx.read_exact(&mut buf).await? && buf != info_hash {
+            if let _ = rx.read_exact(&mut buf).await?
+                && buf != info_hash
+            {
                 return err;
             }
 

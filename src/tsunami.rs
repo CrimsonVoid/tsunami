@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use rand::{distributions::Alphanumeric, rngs::SmallRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, distributions::Alphanumeric, rngs::SmallRng};
 use time::OffsetDateTime;
 
 use crate::torrent::Torrent;

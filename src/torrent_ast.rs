@@ -1,6 +1,6 @@
 use std::{collections::HashMap, str::from_utf8_unchecked};
 
-use ring::digest;
+use sha1::{Digest, Sha1};
 
 // TorrentAST is a structural representation of a torrent file; fields map over almost identically,
 // with dict's being represented as sub-structs
@@ -164,10 +164,7 @@ impl<'a> Bencode<'a> {
                 tok.nextToken().ok()?;
                 let dictLen = dict.len() - tok.input.len(); // whole slice - slice after nextToken() = bytes read
 
-                return digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, &dict[..dictLen])
-                    .as_ref()
-                    .try_into()
-                    .ok();
+                return Some(Sha1::digest(&dict[..dictLen]).into());
             }
 
             tok.nextToken().ok()?;

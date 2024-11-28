@@ -1,7 +1,7 @@
 use std::{env::temp_dir, path::PathBuf};
 
 use dirs::{download_dir as downld_dir, home_dir};
-use hyper::{body, body::Bytes, client::HttpConnector, Client};
+use hyper::{Client, body, body::Bytes, client::HttpConnector};
 use once_cell::sync::Lazy;
 
 use crate::error::Result;
