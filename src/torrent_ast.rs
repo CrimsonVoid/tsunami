@@ -270,10 +270,9 @@ pub enum TokError {
     StrInvalidIdent,
     StrUnexpectedEOF,
     StrLenEOF,
-    StrLenParseErr,
-    StrEndOverflow,
-    StrTooShort,
     StrInvalidSep,
+    StrLenParseErr,
+    StrTooShort,
 
     IntInvalidEncoding,
     IntInvalidIdent,
@@ -289,8 +288,8 @@ pub enum TokError {
 
     DictInvalidIdent,
     DictUnexpectedEOF,
-    DictExpectedStrKey,
     DictKeysUnsorted,
+    DictExpectedStrKey,
     DictValParseErr,
     DictExpectedEnd,
 }
@@ -325,51 +324,34 @@ impl<'a> BencTokenizer<'a> {
     pub fn parseStr(&mut self) -> Result<&'a [u8], TokError> {
         // check len starts with a non-zero digit to make parsing len simpler later
         match self.input {
-            [b'1'..=b'9', ..] => (),
             [b'0', b':', rest @ ..] => {
                 // empty fast path
                 self.input = rest;
                 return Ok(b"");
             }
+            [b'1'..=b'9', ..] => (),
             [_, ..] => return Err(TokError::StrInvalidIdent),
             [] => return Err(TokError::StrUnexpectedEOF),
         }
 
         // benc string: nnnnnnnn:cccccccccccccccccc
-        //   len as u23 ^------^ ^--start    end--^
-        let (start, end) = {
-            let digitsEnd = self
-                .input
-                .iter()
-                .position(|c| !(*c >= b'0' && *c <= b'9'))
-                .ok_or(TokError::StrLenEOF)?;
-
-            // limit strs to 2^32 bytes
-            // SAFETY: we know input[..digitsEnd] only contains ASCII chars due to predicate fn
-            //         used in position above
+        //     len: u32 ^------^ ^--start    end--^
+        let mut iter = self.input.iter();
+        let len = match iter.position(|c| !c.is_ascii_digit()) {
+            None => return Err(TokError::StrLenEOF),
+            Some(p) if self.input[p] != b':' => return Err(TokError::StrInvalidSep),
+            // SAFETY: we know input[..p] only contains ASCII chars due to is_ascii_digit
             // SAFETY: `as usize` should not overflow since we only support 32/64 bit systems
-            let len = unsafe { from_utf8_unchecked(&self.input[..digitsEnd]) }
-                .parse::<u32>()
-                .map_err(|_| TokError::StrLenParseErr)? as usize;
-
-            let start = digitsEnd + 1; // digitsEnd can be at most 10 chars (u32::MAX = 4294967295)
-            let end = start.saturating_add(len);
-            if end == usize::MAX {
-                return Err(TokError::StrEndOverflow);
-            }
-
-            (start, end)
+            Some(p) => unsafe { from_utf8_unchecked(&self.input[..p]) }
+                .parse::<u32>() // limit strs to 2^32 bytes
+                .map_err(|_| TokError::StrLenParseErr)? as usize,
         };
 
-        if self.input.len() < end {
-            return Err(TokError::StrTooShort);
-        }
-        if self.input[start - 1] != b':' {
-            return Err(TokError::StrInvalidSep);
-        }
-
-        let bstr = &self.input[start..end];
-        self.input = &self.input[end..];
+        let (bstr, input) = iter
+            .as_slice()
+            .split_at_checked(len)
+            .ok_or(TokError::StrTooShort)?;
+        self.input = input;
 
         Ok(bstr)
     }
@@ -388,35 +370,28 @@ impl<'a> BencTokenizer<'a> {
     pub fn parseInt(&mut self) -> Result<i64, TokError> {
         // skip leading negative sign and check if num starts with 1..=9 to simplify parsing later
         let skip = match self.input {
-            [b'i', b'-', b'1'..=b'9', ..] => 2,
-            [b'i', b'1'..=b'9', ..] => 1,
             [b'i', b'0', b'e', rest @ ..] => {
                 // zero fast path
                 self.input = rest;
                 return Ok(0);
             }
+            [b'i', b'-', b'1'..=b'9', ..] => 2,
+            [b'i', b'1'..=b'9', ..] => 1,
             [b'i', ..] => return Err(TokError::IntInvalidEncoding),
             [_, ..] => return Err(TokError::IntInvalidIdent),
             [] => return Err(TokError::IntUnexpectedEOF),
         };
 
-        let digitsEnd = self.input[skip..]
-            .iter()
-            .position(|c| !(*c >= b'0' && *c <= b'9'))
-            .ok_or(TokError::IntLenEOF)?;
-
-        let rest = match &self.input[digitsEnd + skip..] {
-            [b'e', rest @ ..] => rest,
-            _ => return Err(TokError::IntExpectedEnd),
+        let mut iter = self.input[skip..].iter();
+        let num = match iter.position(|c| !c.is_ascii_digit()) {
+            None => return Err(TokError::IntLenEOF),
+            Some(p) if self.input[skip + p] != b'e' => return Err(TokError::IntExpectedEnd),
+            // SAFETY: we know input[1..skip + p] only contains ASCII chars due to is_ascii_digit
+            Some(p) => unsafe { from_utf8_unchecked(&self.input[1..skip + p]) }
+                .parse::<i64>()
+                .map_err(|_| TokError::IntLenParseErr)?,
         };
-
-        // SAFETY: we know input[1..digitsEnd+skip] only contains ASCII chars due to predicate fn
-        //         used in position above
-        let num = unsafe { from_utf8_unchecked(&self.input[1..digitsEnd + skip]) }
-            .parse::<i64>()
-            .map_err(|_| TokError::IntLenParseErr)?;
-
-        self.input = rest;
+        self.input = iter.as_slice();
 
         Ok(num)
     }
@@ -460,7 +435,7 @@ impl<'a> BencTokenizer<'a> {
     // pseudo format: d(Str Benc)*e
     pub fn parseDict(&mut self) -> Result<HashMap<&'a [u8], Bencode<'a>>, TokError> {
         let mut dict = HashMap::new();
-        let mut prevKey = &self.input[..0];
+        let mut key = &self.input[..0];
 
         match self.input {
             [b'd', b'e', rest @ ..] => {
@@ -474,19 +449,15 @@ impl<'a> BencTokenizer<'a> {
         }
 
         loop {
-            let k = match self.parseStr() {
+            key = match self.parseStr() {
+                Ok(k) if k < key => return Err(TokError::DictKeysUnsorted),
                 Ok(k) => k,
                 Err(TokError::StrInvalidIdent) => break,
                 Err(_) => return Err(TokError::DictExpectedStrKey),
             };
 
-            if k < prevKey {
-                return Err(TokError::DictKeysUnsorted);
-            }
-            prevKey = k;
-
             match self.nextToken() {
-                Ok(v) if self.buildCollections => dict.insert(k, v),
+                Ok(v) if self.buildCollections => dict.insert(key, v),
                 Ok(_) => None,
                 Err(_) => return Err(TokError::DictValParseErr),
             };

@@ -96,7 +96,7 @@ fn parse_str_fail() {
         (
             "4294967295:u32_MAX",
             if cfg!(target_pointer_width = "32") {
-                StrEndOverflow
+                StrTooShort
             } else {
                 StrTooShort
             },
