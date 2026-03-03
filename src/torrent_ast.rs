@@ -31,7 +31,7 @@ pub struct FileAST<'a> {
 }
 
 impl<'a> TorrentAST<'a> {
-    pub fn decode(file: &[u8]) -> Option<TorrentAST> {
+    pub fn decode(file: &[u8]) -> Option<TorrentAST<'_>> {
         let mut torrent = Bencode::decode(file)?.dict()?;
         let mut info = torrent.remove(&b"info"[..])?.dict()?;
 
@@ -112,7 +112,7 @@ impl<'a> Bencode<'a> {
     /// // consumed an empty dict but there was input left
     /// assert!(Bencode::decode(b"i42e ") == None);
     /// ```
-    pub fn decode(input: &[u8]) -> Option<Bencode> {
+    pub fn decode(input: &[u8]) -> Option<Bencode<'_>> {
         let mut tok = BencTokenizer {
             input,
             buildCollections: true,

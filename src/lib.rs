@@ -1,4 +1,4 @@
-#![feature(let_chains, try_blocks, iterator_try_collect, test)]
+#![feature(try_blocks, iterator_try_collect, test)]
 
 mod error;
 #[allow(non_snake_case)]
